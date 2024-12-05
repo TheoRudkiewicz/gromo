@@ -392,8 +392,8 @@
 <p>To grow a layer of neurons, we need new incoming connections and new outgoing connections. If we look at the section with two modules <cite>M1</cite> and <cite>M2</cite> with a layer of neurons in between, we can grow the layer of neurons by adding new outgoing connections in <cite>M1</cite> (noted <cite>O1</cite>) and new incoming connections in <cite>M2</cite> (noted <cite>I2</cite>). To compute the new weights with the TINY/FoGro method we can use the method <cite>compute_optimal_added_parameters</cite> in <cite>M2</cite> that will also update the module <cite>M1</cite> if the option <cite>update_previous</cite> is set to <cite>True</cite>.</p>
 <p>You can then use the <cite>extended_forward</cite> method to compute the forward pass with the new weights. More precisely, the <cite>extended_forward</cite> with integrating the <cite>scaling_factor</cite> (noted <span class="math notranslate nohighlight">\(\gamma\)</span>) to the forward pass:</p>
 <ul class="simple">
-<li><p><span class="math notranslate nohighlight">\(\texttt{extended\_forward}(x) = (M1(x), \gamma  O1(x))\)</span></p></li>
-<li><p><span class="math notranslate nohighlight">\(\texttt{extended\_forward}(M1(x), \gamma  O1(x)) = M2(M1(x)) + \gamma^2  I2(O1(x))\)</span></p></li>
+<li><p><span class="math notranslate nohighlight">\(\texttt{extended_forward}(x) = (M1(x), \gamma  O1(x))\)</span></p></li>
+<li><p><span class="math notranslate nohighlight">\(\texttt{extended_forward}(M1(x), \gamma  O1(x)) = M2(M1(x)) + \gamma^2  I2(O1(x))\)</span></p></li>
 </ul>
 <p>Once satisfied with the extension and the scaling factor, they are incorporated in the forward pass by using the method <cite>apply_change</cite> in <cite>M2</cite> with the option <cite>apply_previous</cite> set to <cite>True</cite>.</p>
 </section>
