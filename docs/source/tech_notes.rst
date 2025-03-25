@@ -47,11 +47,11 @@ Statistical quantities
 The computation of all statistic has the same structure.
 
 1. Firstly the statistic is created as an instance of `TensorStatistics`.
-2. Then we use our network to compute intermediate quantities. During this forward pass we store the intermediate quantities as explained above and we set the statistics as not updated. This is sed to ensure that we do not update a statistic multiple times with the same data.
+2. Then we use our network to compute intermediate quantities. During this forward pass we store the intermediate quantities as explained above and we set the statistics as not updated. This is to ensure that we do not update a statistic multiple times with the same data.
 3. We call the method `update` of the statistic to update it with the intermediate quantities. This includes updating the number of samples seen to compute the current statistic.
 4. We can then access the statistic by calling it (i.e. using `__call__`).
 
-The previously mentioned statistics (`S local`, `M`, `S growth`, `M prev`, `cross covariance`) are transparently accessible in the `GrowingModule`. However they are not necessary stored in the `GrowingModule`. In the case of a `GrowingModule`,  (`M`, `M prev`, `cross covariance`) are computed in the `GrowingModule`. `S local` is computed either in the previous module if it is an `AdditionGrowingModule` or in the `GrowingModule` if it is a `GrowingModule` (this is due to the fact that all next modules of an addition module require the same `S local`). The computation of `S growth` is left to the previous module in any case (this is due to the fact that in the case of fully-connected layers (`nn.Linear`) the `S growth` is exactly the `S local` of the previous module). (Note that here we talk about the `S growth` used to by the current layer to compute new weights. Indeed, the layer still needs to compute a `S growth` but which is used by the next layer to compute its new weights).
+The previously mentioned statistics (`S local`, `M`, `S growth`, `M prev`, `cross covariance`) are transparently accessible in the `GrowingModule`. However they are not necessarily stored in the `GrowingModule`. In the case of a `GrowingModule`,  (`M`, `M prev`, `cross covariance`) are computed in the `GrowingModule`. `S local` is computed either in the previous module if it is an `AdditionGrowingModule` or in the `GrowingModule` if it is a `GrowingModule` (this is due to the fact that all next modules of an addition module require the same `S local`). The computation of `S growth` done directly in the module with the input of the previous module (However due to the fact that in the case of fully-connected layers (`nn.Linear`) the `S growth` is exactly the `S local` of the previous module, we do not recompute it, and simply point to the S local tensor of the previous module). (Note that here we talk about the `S growth` used by the current layer to compute new weights. Indeed, the layer still needs to compute a `S growth` but which is used by the next layer to compute its new weights).
 
 `S local` and `S growth` (for the next module) tensors are computed using the input of the module. `cross covariance` is computed using the input of the module and of the previous module. `M` is computed using the input and the output gradient of the module. `M prev` is computed using the input of the previous module and the output gradient of the current module.
 
@@ -100,6 +100,7 @@ Glossary
 Bibliography
 =============
 
-.. [TMLR24] Verbockhaven, M., Rudkiewicz, T., Chevallier, S., and Charpiat, G.
-        (2024). Growing tiny networks: Spotting expressivity bottlenecks and
-        fixing them optimally. TMLR.
+.. [ESANN2025] Stella Douka, Manon Verbockhaven, Théo Rudkiewicz, Stéphane Rivaud,
+        François P. Landes, Sylvain Chevallier and Guillaume Charpiat.
+        Growth strategies for arbitrary DAG neural architectures. ESANN 2025 -
+        33th European Symposium on Artificial Neural Networks, 2025, Bruges, Belgium.

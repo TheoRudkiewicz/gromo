@@ -173,6 +173,9 @@ cython_debug/
 # VSCode
 .vscode
 
+# Configuration files
+gromo.config
+
 # Log files
 mlruns/*
 
@@ -187,3 +190,6 @@ data/
 
 # Other
 my
+temp
+dataset
+logs

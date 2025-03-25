@@ -2,9 +2,9 @@ from warnings import warn
 
 import torch
 
-from gromo.growing_module import AdditionGrowingModule, GrowingModule
-from gromo.tensor_statistic import TensorStatistic
-from gromo.tools import compute_optimal_added_parameters
+from gromo.modules.growing_module import AdditionGrowingModule, GrowingModule
+from gromo.utils.tensor_statistic import TensorStatistic
+from gromo.utils.tools import compute_optimal_added_parameters
 from gromo.utils.utils import global_device
 
 
@@ -227,7 +227,10 @@ class LinearAdditionGrowingModule(AdditionGrowingModule):
             )
 
     def compute_optimal_delta(
-        self, update: bool = True, return_deltas: bool = False
+        self,
+        update: bool = True,
+        return_deltas: bool = False,
+        force_pseudo_inverse: bool = False,
     ) -> list[tuple[torch.Tensor, torch.Tensor]] | None:
         """
         Compute the optimal delta for each previous layer using current S and M tensors.
@@ -242,6 +245,9 @@ class LinearAdditionGrowingModule(AdditionGrowingModule):
             if True update the optimal delta layer attribute
         return_deltas: bool
             if True return the deltas
+        force_pseudo_inverse: bool
+            if True, use the pseudo-inverse to compute the optimal delta even if the
+            matrix is invertible
 
         Returns
         -------
@@ -264,10 +270,19 @@ class LinearAdditionGrowingModule(AdditionGrowingModule):
         assert (
             self.previous_tensor_m().shape[1] == self.in_features
         ), f"The tensor M should have the same number of output features as the layer."
-        try:  # TODO: change for solve and lstsq
-            delta = torch.linalg.solve(tensor_s, previous_tensor_m).t()
-        except torch.linalg.LinAlgError:
-            delta = torch.linalg.lstsq(tensor_s, previous_tensor_m).solution.t()
+        if not force_pseudo_inverse:
+            try:
+                delta = torch.linalg.solve(tensor_s, previous_tensor_m).t()
+            except torch.linalg.LinAlgError:
+                force_pseudo_inverse = True
+                # delta = torch.linalg.lstsq(tensor_s, previous_tensor_m).solution.t()
+                # do not use lstsq because it does not work with the GPU
+                warn(
+                    f"Using the pseudo-inverse for the computation of the optimal delta "
+                    f"for {self.name}."
+                )
+        if force_pseudo_inverse:
+            delta = (torch.linalg.pinv(tensor_s) @ previous_tensor_m).t()
 
         deltas = []
         current_index = 0
@@ -325,6 +340,7 @@ class LinearGrowingModule(GrowingModule):
             tensor_m_shape=(in_features + use_bias, out_features),
             device=device,
             name=name,
+            s_growth_is_needed=False,
         )
         self.use_bias = use_bias
         self.in_features = in_features
@@ -368,8 +384,8 @@ class LinearGrowingModule(GrowingModule):
         if self.use_bias:
             # TODO (optimize this): we could directly store the extended input
             return torch.cat(
-                (self.input, torch.ones(self.input.shape[0], 1, device=self.device)),
-                dim=1,
+                (self.input, torch.ones(*self.input.shape[:-1], 1, device=self.device)),
+                dim=-1,
             )
         else:
             return self.input
@@ -418,8 +434,12 @@ class LinearGrowingModule(GrowingModule):
             self.input is not None
         ), f"The input must be stored to compute the update of S. (error in {self.name})"
         return (
-            torch.einsum("ij,ik->jk", self.input_extended, self.input_extended),
-            self.input.shape[0],
+            torch.einsum(
+                "ij,ik->jk",
+                torch.flatten(self.input_extended, 0, -2),
+                torch.flatten(self.input_extended, 0, -2),
+            ),
+            torch.tensor(self.input.shape[:-1]).prod().int().item(),
         )
 
     def compute_m_update(
@@ -446,8 +466,12 @@ class LinearGrowingModule(GrowingModule):
         if desired_activation is None:
             desired_activation = self.pre_activity.grad
         return (
-            torch.einsum("ij,ik->jk", self.input_extended, desired_activation),
-            self.input.shape[0],
+            torch.einsum(
+                "ij,ik->jk",
+                torch.flatten(self.input_extended, 0, -2),
+                torch.flatten(desired_activation, 0, -2),
+            ),
+            torch.tensor(self.input.shape[:-1]).prod().int().item(),
         )
 
     def compute_m_prev_update(
@@ -477,9 +501,11 @@ class LinearGrowingModule(GrowingModule):
         elif isinstance(self.previous_module, LinearGrowingModule):
             return (
                 torch.einsum(
-                    "ij,ik->jk", self.previous_module.input_extended, desired_activation
+                    "ij,ik->jk",
+                    torch.flatten(self.previous_module.input_extended, 0, -2),
+                    torch.flatten(desired_activation, 0, -2),
                 ),
-                self.input.shape[0],
+                torch.tensor(self.input.shape[:-1]).prod().int().item(),
             )
         elif isinstance(self.previous_module, LinearAdditionGrowingModule):
             if self.previous_module.number_of_successors > 1:
@@ -516,9 +542,11 @@ class LinearGrowingModule(GrowingModule):
         elif isinstance(self.previous_module, LinearGrowingModule):
             return (
                 torch.einsum(
-                    "ij,ik->jk", self.previous_module.input_extended, self.input_extended
+                    "ij,ik->jk",
+                    torch.flatten(self.previous_module.input_extended, 0, -2),
+                    torch.flatten(self.input_extended, 0, -2),
                 ),
-                self.input.shape[0],
+                torch.tensor(self.input.shape[:-1]).prod().int().item(),
             )
         elif isinstance(self.previous_module, LinearAdditionGrowingModule):
             return (
@@ -551,17 +579,50 @@ class LinearGrowingModule(GrowingModule):
         if isinstance(self.next_module, LinearGrowingModule):
             return (
                 torch.einsum(
-                    "ij,ik->jk", self.input, self.next_module.projected_desired_update()
+                    "ij,ik->jk",
+                    torch.flatten(self.input, 0, -2),
+                    torch.flatten(self.next_module.projected_desired_update(), 0, -2),
                 ),
-                self.input.shape[0],
+                torch.tensor(self.input.shape[:-1]).prod().int().item(),
             )
         else:
             raise TypeError("The next module must be a LinearGrowingModule.")
 
     @property
+    def tensor_s_growth(self):
+        """
+        Supercharge tensor_s_growth to redirect to the normal tensor_s as it is the same for Linear layers.
+        """
+        if self.previous_module is None:
+            raise ValueError(
+                f"No previous module for {self.name}. Thus S is not defined."
+            )
+        elif isinstance(self.previous_module, LinearGrowingModule):
+            return self.previous_module.tensor_s
+        elif isinstance(self.previous_module, LinearAdditionGrowingModule):
+            raise NotImplementedError(
+                f"S growth is not implemented for module preceded by an LinearAdditionGrowingModule."
+                " (error in {self.name})"
+            )
+        else:
+            raise NotImplementedError(
+                f"S growth is not implemented yet for {type(self.previous_module)} as previous module."
+            )
+
+    @tensor_s_growth.setter
+    def tensor_s_growth(self, value) -> None:
+        """
+        Allow to set the tensor_s_growth but has no effect.
+        """
+        raise AttributeError(
+            f"You tried to set tensor_s_growth of a LinearGrowingModule (name={self.name})."
+            "This is not allowed as s growth is the same as tensor_s."
+        )
+
+    @property
     def tensor_n(self) -> torch.Tensor:
         """
-        Compute the tensor N for the layer with the current M_-2, P and optimal delta.
+        Compute the tensor N for the layer with the current M_{-2}, P and optimal delta.
 
         Returns
         -------
@@ -644,8 +705,8 @@ class LinearGrowingModule(GrowingModule):
             extension of the weight matrix of the layer if None,
             the layer is extended with zeros
             should be of shape:
-             - (out_features, in_features + added_in_features) if added_in_features > 0
-             - (out_features + added_out_features, in_features) if added_out_features > 0
+            - (out_features, in_features + added_in_features) if added_in_features > 0
+            - (out_features + added_out_features, in_features) if added_out_features > 0
         bias_extension: torch.Tensor of shape (out_features + added_out_features,)
             extension of the bias vector of the layer if None,
             the layer is extended with zeros
@@ -784,13 +845,35 @@ class LinearGrowingModule(GrowingModule):
             name=self.tensor_m.name,
         )
 
+    def _sub_select_added_output_dimension(self, keep_neurons: int) -> None:
+        """
+        Select the first `keep_neurons` neurons of the optimal added output dimension.
+
+        Parameters
+        ----------
+        keep_neurons: int
+            number of neurons to keep
+        """
+        assert (
+            self.extended_output_layer is not None
+        ), f"The layer should have an extended output layer to sub-select the output dimension."
+        self.extended_output_layer = self.layer_of_tensor(
+            self.extended_output_layer.weight[:keep_neurons],
+            bias=(
+                self.extended_output_layer.bias[:keep_neurons]
+                if self.extended_output_layer.bias is not None
+                else None
+            ),
+        )
+
     def sub_select_optimal_added_parameters(
         self,
         keep_neurons: int,
         sub_select_previous: bool = True,
     ) -> None:
         """
-        Select the first keep_neurons neurons of the optimal added parameters.
+        Select the first keep_neurons neurons of the optimal added parameters
+        linked to this layer.
 
         Parameters
         ----------
@@ -804,7 +887,8 @@ class LinearGrowingModule(GrowingModule):
         ), "The layer should have an extended input xor output layer."
         if self.extended_input_layer is not None:
             self.extended_input_layer = self.layer_of_tensor(
-                self.extended_input_layer.weight[:, :keep_neurons]
+                self.extended_input_layer.weight[:, :keep_neurons],
+                bias=self.extended_input_layer.bias,
             )
             assert self.eigenvalues_extension is not None, (
                 f"The eigenvalues of the extension should be computed before "
@@ -812,18 +896,9 @@ class LinearGrowingModule(GrowingModule):
             )
             self.eigenvalues_extension = self.eigenvalues_extension[:keep_neurons]
 
-        if self.extended_output_layer is not None:
-            self.extended_output_layer = self.layer_of_tensor(
-                self.extended_output_layer.weight[:keep_neurons],
-                bias=(
-                    self.extended_output_layer.bias[:keep_neurons]
-                    if self.extended_output_layer.bias is not None
-                    else None
-                ),
-            )
         if sub_select_previous:
             if isinstance(self.previous_module, LinearGrowingModule):
-                self.previous_module.sub_select_optimal_added_parameters(keep_neurons)
+                self.previous_module._sub_select_added_output_dimension(keep_neurons)
             elif isinstance(self.previous_module, LinearAdditionGrowingModule):
                 raise NotImplementedError
             else:
@@ -854,6 +929,9 @@ class LinearGrowingModule(GrowingModule):
             if True update the optimal delta layer attribute
         dtype: torch.dtype
             dtype for S and M during the computation
+        force_pseudo_inverse: bool
+            if True, use the pseudo-inverse to compute the optimal delta even if the
+            matrix is invertible
 
         Returns
         -------
@@ -958,7 +1036,7 @@ class LinearGrowingModule(GrowingModule):
             f"No previous module for {self.name}."
             "Therefore neuron addition is not possible."
         )
-        matrix_s = self.previous_module.tensor_s()
+        matrix_s = self.tensor_s_growth()
 
         if matrix_n.dtype != dtype:
             matrix_n = matrix_n.to(dtype=dtype)
@@ -1016,90 +1094,3 @@ class LinearGrowingModule(GrowingModule):
                 )
 
         return alpha_weight, alpha_bias, omega, self.eigenvalues_extension
-
-
-if __name__ == "__main__":
-    l1 = LinearGrowingModule(
-        1, 1, use_bias=True, post_layer_function=torch.nn.ReLU(), name="l1"
-    )
-    l2 = LinearGrowingModule(
-        1,
-        1,
-        use_bias=True,
-        previous_module=l1,
-        post_layer_function=torch.nn.ReLU(),
-        name="l2",
-    )
-    l3 = LinearGrowingModule(1, 1, use_bias=True, previous_module=l2, name="l3")
-    x = torch.randn(200, 1, device=global_device())
-    net = torch.nn.Sequential(l1, l2, l3)
-
-    print(net)
-
-    for layer in net:
-        layer.init_computation()
-
-    for layer in net:
-        print(layer.__str__(verbose=1))
-
-    y = net(x)
-    loss = torch.norm(y)
-    print(f"loss: {loss}")
-    loss.backward()
-
-    for layer in net:
-        layer.update_computation()
-
-        layer.compute_optimal_updates()
-
-    for layer in net:
-        layer.reset_computation()
-
-    l1.delete_update()
-    l3.delete_update()
-
-    l2.scaling_factor = 1
-
-    print(f"{l2.first_order_improvement=}")
-    print(f"{l2.weight=}")
-    print(f"{l2.bias=}")
-    print(f"{l2.optimal_delta_layer=}")
-    print(f"{l2.parameter_update_decrease=}")
-    print(f"{l2.extended_input_layer=}")
-    print(f"{l2.extended_input_layer.weight=}")
-    print(f"{l2.extended_input_layer.bias=}")
-    print(f"{l1.extended_output_layer=}")
-    print(f"{l2.eigenvalues_extension=}")
-
-    x_ext = None
-    for layer in net:
-        x, x_ext = layer.extended_forward(x, x_ext)
-
-    new_loss = torch.norm(x)
-    print(f"loss: {new_loss}, {loss - new_loss} improvement")
-    l2.apply_change()
-
-    print("------- New weights -------")
-    print(f"{l1.weight=}")
-    print(f"{l2.weight=}")
-    print(f"{l3.weight=}")
-    print("------- New biases -------")
-    print(f"{l1.bias=}")
-    print(f"{l2.bias=}")
-    print(f"{l3.bias=}")
-
-    for layer in net:
-        layer.init_computation()
-
-    for layer in net:
-        print(layer.__str__(verbose=2))
-
-    y = net(x)
-    loss = torch.norm(y)
-    print(f"loss: {loss}")
-    loss.backward()
-
-    for layer in net:
-        layer.update_computation()
-
-        layer.compute_optimal_updates()

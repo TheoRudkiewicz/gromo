@@ -1,13 +1,8 @@
-from typing import Callable, Iterable
+from typing import Any, Callable, Iterable, Optional
 
-import matplotlib.cm as mpl_cm
-import matplotlib.colors as mpl_colors
-import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
-from pyvis.network import Network
-from torch.types import _int
 
 
 __global_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -22,10 +17,7 @@ def set_device(device: str | torch.device) -> None:
         device choice
     """
     global __global_device
-    if isinstance(device, str):
-        __global_device = torch.device(device)
-    else:
-        __global_device = device
+    __global_device = torch.device(device)
 
 
 def reset_device() -> None:
@@ -44,6 +36,30 @@ def global_device() -> torch.device:
     """
     global __global_device
     return __global_device
+
+
+def get_correct_device(self, device: torch.device | str | None) -> torch.device:
+    """Get and set the correct device as global
+    Precedence works as follows:
+        argument > config file > global_device
+
+    Parameters
+    ----------
+    device : torch.device | str | None
+        chosen device argument, leave empty to use config file
+
+    Returns
+    -------
+    torch.device
+        selected correct device
+    """
+    device = torch.device(
+        device
+        if device is not None
+        else set_from_conf(self, "device", global_device(), setter=False)
+    )
+    set_device(device)
+    return device
 
 
 def torch_zeros(*size: tuple[int, int], **kwargs) -> torch.Tensor:
@@ -86,6 +102,35 @@ def torch_ones(*size: tuple[int, int], **kwargs) -> torch.Tensor:
         return torch.ones(*size, device=__global_device, **kwargs)
 
 
+def set_from_conf(self, name: str, default: Any = None, setter: bool = True) -> Any:
+    """Standardize private argument setting from config file
+
+    Parameters
+    ----------
+    name : str
+        name of variable
+    default : Any, optional
+        default value in case config does not provide one, by default None
+    setter : bool, optional
+        set the retrieved value as argument in the object, by default True
+
+    Returns
+    -------
+    Any
+        value set to variable
+    """
+    # Check that config file has been found and read
+    assert hasattr(self, "_config_data")
+    assert isinstance(self._config_data, dict)
+
+    value = self._config_data.get(name, default)
+
+    if setter:
+        setattr(self, f"{name}", value)
+
+    return value
+
+
 def activation_fn(fn_name: str) -> nn.Module:
     """Create activation function module by name
 
@@ -114,20 +159,23 @@ def activation_fn(fn_name: str) -> nn.Module:
         return nn.Identity()
 
 
-def line_search(cost_fn: Callable, verbose: bool = True) -> tuple[float, float]:
+def line_search(
+    cost_fn: Callable, return_history: bool = False
+) -> tuple[float, float] | tuple[list, list]:
     """Line search for black-box convex function
 
     Parameters
     ----------
     cost_fn : Callable
         black-box convex function
-    verbose : bool, optional
-        create plot, by default True
+    return_history : bool, optional
+        return full loss history, by default False
 
     Returns
     -------
-    tuple[float, float]
+    tuple[float, float] | tuple[list, list]
         return minima and min value
+        if return_history is True return instead tested parameters and loss history
     """
     losses = []
     n_points = 100
@@ -159,15 +207,115 @@ def line_search(cost_fn: Callable, verbose: bool = True) -> tuple[float, float]:
     factor = f_full[np.argmin(losses)]
     min_loss = np.min(losses)
 
-    if verbose:
-        plt.figure()
-        plt.plot(f_full, losses)
-        plt.xlabel(f"factor $\gamma$")  # type: ignore
-        plt.ylabel("loss")
-        plt.title(f"Minima at {factor=} with loss={min_loss}")
-        plt.show()
+    if return_history:
+        return list(f_full), losses
+    else:
+        return factor, min_loss
 
-    return factor, min_loss
+
+def mini_batch_gradient_descent(
+    model: nn.Module | Callable,
+    cost_fn: Callable,
+    X: torch.Tensor,
+    Y: torch.Tensor,
+    lrate: float,
+    max_epochs: int,
+    batch_size: int,
+    parameters: Iterable | None = None,
+    fast: bool = False,
+    eval_fn: Callable | None = None,
+    verbose: bool = True,
+) -> tuple[list[float], list[float]]:
+    """Mini-batch gradient descent implementation
+    Uses AdamW with no weight decay and shuffled DataLoader
+
+    Parameters
+    ----------
+    model : nn.Module
+        pytorch model or forwards function
+    cost_fn : Callable
+        cost function
+    X : torch.Tensor
+        input features
+    Y : torch.Tensor
+        true labels
+    lrate : float
+        learning rate
+    max_epochs : int
+        maximum epochs
+    batch_size : int
+        batch size
+    parameters: iterable | None, optional
+        list of torch parameters in case the model is just a forward function, by default None
+    fast : bool, optional
+        fast implementation without evaluation, by default False
+    eval_fn : Callable | None, optional
+        evaluation function, by default None
+    verbose : bool, optional
+        print info, by default True
+
+    Returns
+    -------
+    tuple[list[float], list[float]]
+        train loss history, train accuracy history
+    """
+    loss_history, acc_history = [], []
+    full_loss = []
+    gradients = []
+
+    dataset = torch.utils.data.TensorDataset(X, Y)
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
+    if not isinstance(model, nn.Module):
+        if (parameters is None) or (len(parameters) < 1):
+            raise AttributeError(
+                "When the model is just a forward function, the parameters argument must not be None or empty"
+            )
+    else:
+        parameters = model.parameters()
+        saved_parameters = list(model.parameters())
+    optimizer = torch.optim.AdamW(parameters, lr=lrate, weight_decay=0)
+
+    for epoch in range(max_epochs):
+        correct, total, epoch_loss = 0, 0, 0
+        for x_batch, y_batch in dataloader:
+            optimizer.zero_grad()
+
+            output = model(x_batch)
+            loss = cost_fn(output, y_batch)
+            epoch_loss += loss.item()
+            full_loss.append(loss.item())
+
+            if not fast:
+                correct += (output.argmax(axis=1) == y_batch).int().sum().item()
+                total += len(output)
+
+            loss.backward()
+
+            if isinstance(model, nn.Module):
+                avg_grad_norm = 0.0
+                for param in model.parameters():
+                    avg_grad_norm += param.grad.norm()
+                avg_grad_norm /= len(saved_parameters)
+                gradients.append(avg_grad_norm.cpu())
+            optimizer.step()
+
+        loss_history.append(epoch_loss / len(dataloader))
+        if not fast:
+            accuracy = correct / total
+            acc_history.append(accuracy)
+            if eval_fn is not None:
+                eval_fn()
+
+        if verbose and epoch % 10 == 0:
+            if fast:
+                print(f"Epoch {epoch}: Train loss {loss_history[-1]}")
+            else:
+                print(
+                    f"Epoch {epoch}: Train loss {loss_history[-1]} Train Accuracy {accuracy}"
+                )
+
+    return loss_history, acc_history
 
 
 def batch_gradient_descent(
@@ -179,28 +327,27 @@ def batch_gradient_descent(
     tol: float = 1e-5,
     fast: bool = True,
     eval_fn: Callable | None = None,
-    verbose: bool = True,
-    loss_name: str = "loss",
-    title: str = "",
 ) -> tuple[list[float], list[float]]:
     """Batch gradient descent implementation
 
     Parameters
     ----------
-    output : torch.Tensor
-        current output
-    target : torch.Tensor
-        target tensor
+    forward_fn : Callable
+        Forward function
     cost_fn : Callable
         _description_
-    lrate : float, optional
-        _description_, by default 0.01
+    target : torch.Tensor
+        target tensor
+    optimizer : torch.optim.Optimizer
+        optimizer
     max_epochs : int, optional
-        _description_, by default 100
+        max number of epochs, by default 100
     tol : float, optional
-        _description_, by default 1e-5
-    verbose : bool, optional
-        _description_, by default True
+        tolerance, by default 1e-5
+    fast : bool, optional
+        fast implementation without evaluation, by default True
+    eval_fn : Callable | None, optional
+        evaluation function, by default None
 
     Returns
     -------
@@ -238,81 +385,7 @@ def batch_gradient_descent(
         prev_loss = loss.item()
         # target.detach_()
 
-    if verbose:
-        plt.figure()
-        plt.plot(loss_history)
-        plt.xlabel("epochs")
-        plt.ylabel(f"{loss_name}")
-        plt.title(f"{title}")
-        plt.show()
-
-        if not fast:
-            labels = ["train"]
-            plt.figure()
-            plt.plot(acc_history, label=labels)
-            plt.xlabel("epochs")
-            plt.ylabel("accuracy")
-            plt.title(f"{title}")
-            plt.legend()
-            plt.show()
-
     return loss_history, acc_history
-
-
-def DAG_to_pyvis(dag):
-    """Create pyvis graph based on GrowableDAG
-
-    Parameters
-    ----------
-    dag : GrowableDAG
-        growable dag object
-
-    Returns
-    -------
-    _type_
-        pyvis object
-    """
-    # nt = Network('500px', '500px', directed=True, notebook=True, cdn_resources='remote')
-    nt = Network(directed=True)
-
-    default_offset_x = 150.0
-    default_offset_y = 0.0
-
-    for node in dag.nodes:
-        size = dag.nodes[node]["size"]
-        attrs = {
-            "x": None,
-            "y": None,
-            "physics": True,
-            "label": node,
-            "title": str(size),
-            "color": size_to_color(size),
-            "size": np.sqrt(size),
-            "mass": 4,
-        }
-        if node == "start":
-            attrs.update(
-                {"x": -default_offset_x, "y": -default_offset_y, "physics": False}
-            )
-        elif node == "end":
-            attrs.update({"x": default_offset_x, "y": default_offset_y, "physics": False})
-        nt.add_node(node, **attrs)
-    for edge in dag.edges:
-        prev_node, next_node = edge
-        module = dag.get_edge_module(prev_node, next_node)
-        nt.add_edge(
-            prev_node, next_node, title=module.name, label=str(module.weight.shape)
-        )
-
-    # nt.toggle_physics(False)
-    return nt
-
-
-def size_to_color(size):
-    cmap = mpl_cm.Reds
-    norm = mpl_colors.Normalize(vmin=0, vmax=784)
-    rgba = cmap(norm(size))
-    return mpl_colors.rgb2hex(rgba)
 
 
 def calculate_true_positives(
@@ -334,9 +407,9 @@ def calculate_true_positives(
     tuple[float, float, float]
         true positives, false positives, false negatives
     """
-    true_positives = np.sum((actual == label) & (predicted == label))
-    false_positives = np.sum((actual != label) & (predicted == label))
-    false_negatives = np.sum((predicted != label) & (actual == label))
+    true_positives = torch.sum((actual == label) & (predicted == label)).item()
+    false_positives = torch.sum((actual != label) & (predicted == label)).item()
+    false_negatives = torch.sum((predicted != label) & (actual == label)).item()
 
     return true_positives, false_positives, false_negatives
 
