@@ -4,8 +4,8 @@ from unittest import TestCase, main
 import torch
 
 from gromo.modules.linear_growing_module import (
-    LinearAdditionGrowingModule,
     LinearGrowingModule,
+    LinearMergeGrowingModule,
 )
 from gromo.utils.tensor_statistic import TensorStatistic
 from gromo.utils.utils import global_device
@@ -88,27 +88,27 @@ class TestLinearGrowingModule(TorchTestCase):
         self.input_x = torch.randn((11, 5), device=global_device())
         self.demo_layers = dict()
         for bias in (True, False):
-            self.demo_layer_1 = LinearGrowingModule(
+            demo_layer_1 = LinearGrowingModule(
                 5,
                 3,
                 use_bias=bias,
                 name=f"L1({'bias' if bias else 'no_bias'})",
                 device=global_device(),
             )
-            self.demo_layer_2 = LinearGrowingModule(
+            demo_layer_2 = LinearGrowingModule(
                 3,
                 7,
                 use_bias=bias,
                 name=f"L2({'bias' if bias else 'no_bias'})",
-                previous_module=self.demo_layer_1,
+                previous_module=demo_layer_1,
                 device=global_device(),
             )
-            self.demo_layers[bias] = (self.demo_layer_1, self.demo_layer_2)
+            self.demo_layers[bias] = (demo_layer_1, demo_layer_2)
 
     def test_compute_s(self):
         x1, x2, is_th_1, is_th_2, os_th_1, os_th_2 = theoretical_s_1(self.n, self.c)
 
-        output_module = LinearAdditionGrowingModule(in_features=self.c + 1, name="output")
+        output_module = LinearMergeGrowingModule(in_features=self.c + 1, name="output")
         layer = LinearGrowingModule(
             self.c, self.c + 1, use_bias=False, name="layer1", next_module=output_module
         )
@@ -143,7 +143,7 @@ class TestLinearGrowingModule(TorchTestCase):
             os_th_1.float().to(global_device()) / self.n,
         )
 
-        # input S computed from addition layer
+        # input S computed from merge layer
         self.assertAllClose(
             output_module.previous_tensor_s(),
             is_th_1.float().to(global_device()) / self.n,
@@ -169,7 +169,16 @@ class TestLinearGrowingModule(TorchTestCase):
             is_th_2.float().to(global_device()) / (2 * self.n),
         )
 
-    def test_compute_delta(self):
+    @unittest_parametrize(
+        (
+            {"force_pseudo_inverse": True},
+            {"force_pseudo_inverse": False},
+            {"update_layer": False},
+        )
+    )
+    def test_compute_delta(
+        self, force_pseudo_inverse: bool = False, update_layer: bool = True
+    ):
         for reduction in {"mixed"}:  # { "mean", "sum"} do not work
             # mean: batch is divided by the number of samples in the batch
             # and the total is divided by the number of batches
@@ -224,12 +233,25 @@ class TestLinearGrowingModule(TorchTestCase):
                 )
 
                 # dW*
-                w, _, fo = layer.compute_optimal_delta()
+                w, _, fo = layer.compute_optimal_delta(
+                    force_pseudo_inverse=force_pseudo_inverse, update=update_layer
+                )
                 self.assertAllClose(
                     w,
                     -2 * torch.eye(self.c, device=global_device()) / batch_red,
                     message=f"Error in dW* for {reduction=}, {alpha=}",
                 )
+
+                if update_layer:
+                    self.assertAllClose(
+                        layer.optimal_delta_layer.weight,
+                        w,
+                        message=f"Error in the update of the delta layer for {reduction=}, {alpha=}",
+                    )
+                else:
+                    self.assertIsNone(
+                        layer.optimal_delta_layer,
+                    )
 
                 factors = {
                     "mixed": 1,
@@ -639,80 +661,76 @@ class TestLinearGrowingModule(TorchTestCase):
         # simple test update without natural gradient
         layer_out.compute_optimal_updates(zero_delta=True)
 
-    def test_compute_optimal_added_parameters(self):
-        for bias in (True, False):
-            with self.subTest(bias=bias):
-                demo_layers = self.demo_layers[bias]
-                demo_layers[0].store_input = True
-                demo_layers[1].init_computation()
-                demo_layers[1].tensor_s_growth.init()
+    @unittest_parametrize(({"bias": True, "dtype": torch.float64}, {"bias": False}))
+    def test_compute_optimal_added_parameters(
+        self, bias: bool, dtype: torch.dtype = torch.float32
+    ):
+        demo_layers = self.demo_layers[bias]
+        demo_layers[0].store_input = True
+        demo_layers[1].init_computation()
+        demo_layers[1].tensor_s_growth.init()
 
-                y = demo_layers[0](self.input_x)
-                y = demo_layers[1](y)
-                loss = torch.norm(y)
-                loss.backward()
+        y = demo_layers[0](self.input_x)
+        y = demo_layers[1](y)
+        loss = torch.norm(y)
+        loss.backward()
 
-                demo_layers[1].update_computation()
-                demo_layers[1].tensor_s_growth.update()
+        demo_layers[1].update_computation()
+        demo_layers[1].tensor_s_growth.update()
 
-                demo_layers[1].compute_optimal_delta()
-                alpha, alpha_b, omega, eigenvalues = demo_layers[
-                    1
-                ].compute_optimal_added_parameters()
+        demo_layers[1].compute_optimal_delta()
+        alpha, alpha_b, omega, eigenvalues = demo_layers[
+            1
+        ].compute_optimal_added_parameters(dtype=dtype)
 
-                self.assertShapeEqual(
-                    alpha,
-                    (-1, demo_layers[0].in_features),
-                )
-                k = alpha.size(0)
-                if bias:
-                    self.assertShapeEqual(alpha_b, (k,))
-                else:
-                    self.assertIsNone(alpha_b)
+        self.assertShapeEqual(
+            alpha,
+            (-1, demo_layers[0].in_features),
+        )
+        k = alpha.size(0)
+        if bias:
+            self.assertShapeEqual(alpha_b, (k,))
+        else:
+            self.assertIsNone(alpha_b)
 
-                self.assertShapeEqual(
-                    omega,
-                    (
-                        demo_layers[1].out_features,
-                        k,
-                    ),
-                )
+        self.assertShapeEqual(
+            omega,
+            (
+                demo_layers[1].out_features,
+                k,
+            ),
+        )
 
-                self.assertShapeEqual(eigenvalues, (k,))
+        self.assertShapeEqual(eigenvalues, (k,))
 
-                self.assertIsInstance(
-                    demo_layers[0].extended_output_layer, torch.nn.Linear
-                )
-                self.assertIsInstance(
-                    demo_layers[1].extended_input_layer, torch.nn.Linear
-                )
+        self.assertIsInstance(demo_layers[0].extended_output_layer, torch.nn.Linear)
+        self.assertIsInstance(demo_layers[1].extended_input_layer, torch.nn.Linear)
 
-                # those tests are not working yet
-                demo_layers[1].sub_select_optimal_added_parameters(2)
-                self.assertEqual(demo_layers[1].eigenvalues_extension.shape[0], 2)
-                self.assertEqual(demo_layers[1].extended_input_layer.in_features, 2)
-                self.assertEqual(demo_layers[0].extended_output_layer.out_features, 2)
+        # those tests are not working yet
+        demo_layers[1].sub_select_optimal_added_parameters(2)
+        self.assertEqual(demo_layers[1].eigenvalues_extension.shape[0], 2)
+        self.assertEqual(demo_layers[1].extended_input_layer.in_features, 2)
+        self.assertEqual(demo_layers[0].extended_output_layer.out_features, 2)
 
-    def test_tensor_s_growth(self):
-        for bias in (True, False):
-            with self.subTest(bias=bias):
-                demo_layers = self.demo_layers[bias]
-                demo_layers[0].store_input = True
-                demo_layers[1].tensor_s_growth.init()
+    @unittest_parametrize(({"bias": True}, {"bias": False}))
+    def test_tensor_s_growth(self, bias):
+        demo_layers = self.demo_layers[bias]
+        demo_layers[0].store_input = True
+        demo_layers[1].tensor_s_growth.init()
 
-                y = demo_layers[0](self.input_x)
-                y = demo_layers[1](y)
-                loss = torch.norm(y)
-                loss.backward()
+        y = demo_layers[0](self.input_x)
+        y = demo_layers[1](y)
+        loss = torch.norm(y)
+        loss.backward()
 
-                demo_layers[1].tensor_s_growth.update()
+        demo_layers[1].tensor_s_growth.update()
 
-                self.assertEqual(
-                    demo_layers[1].tensor_s_growth.samples,
-                    self.input_x.size(0),
-                )
-                s = demo_layers[0].in_features + demo_layers[0].use_bias
-                self.assertShapeEqual(demo_layers[1].tensor_s_growth(), (s, s))
+        self.assertEqual(
+            demo_layers[1].tensor_s_growth.samples,
+            self.input_x.size(0),
+        )
+        s = demo_layers[0].in_features + demo_layers[0].use_bias
+        self.assertShapeEqual(demo_layers[1].tensor_s_growth(), (s, s))
 
     def test_tensor_s_growth_errors(self):
         with self.assertRaises(AttributeError):
@@ -722,45 +740,43 @@ class TestLinearGrowingModule(TorchTestCase):
             _ = self.demo_layers[True][0].tensor_s_growth
 
 
-class TestLinearAdditionGrowingModule(TorchTestCase):
+class TestLinearMergeGrowingModule(TorchTestCase):
     def setUp(self):
         torch.manual_seed(0)
         self.demo_modules = dict()
         for bias in (True, False):
-            demo_addition = LinearAdditionGrowingModule(
-                in_features=3, name="addition", device=global_device()
+            demo_merge = LinearMergeGrowingModule(
+                in_features=3, name="merge", device=global_device()
             )
-            demo_addition_prev = LinearGrowingModule(
+            demo_merge_prev = LinearGrowingModule(
                 5,
                 3,
                 use_bias=bias,
-                name="addition_prev",
+                name="merge_prev",
                 device=global_device(),
-                next_module=demo_addition,
+                next_module=demo_merge,
             )
-            demo_addition_next = LinearGrowingModule(
+            demo_merge_next = LinearGrowingModule(
                 3,
                 7,
                 use_bias=bias,
-                name="addition_next",
+                name="merge_next",
                 device=global_device(),
-                previous_module=demo_addition,
+                previous_module=demo_merge,
             )
-            demo_addition.set_previous_modules([demo_addition_prev])
-            demo_addition.set_next_modules([demo_addition_next])
+            demo_merge.set_previous_modules([demo_merge_prev])
+            demo_merge.set_next_modules([demo_merge_next])
             self.demo_modules[bias] = {
-                "add": demo_addition,
-                "prev": demo_addition_prev,
-                "next": demo_addition_next,
-                "seq": torch.nn.Sequential(
-                    demo_addition_prev, demo_addition, demo_addition_next
-                ),
+                "add": demo_merge,
+                "prev": demo_merge_prev,
+                "next": demo_merge_next,
+                "seq": torch.nn.Sequential(demo_merge_prev, demo_merge, demo_merge_next),
             }
         self.input_x = torch.randn((11, 5), device=global_device())
 
     @unittest_parametrize(({"bias": True}, {"bias": False}))
     def test_init(self, bias):
-        self.assertIsInstance(self.demo_modules[bias]["add"], LinearAdditionGrowingModule)
+        self.assertIsInstance(self.demo_modules[bias]["add"], LinearMergeGrowingModule)
 
     @unittest_parametrize(({"bias": True}, {"bias": False}))
     def test_input_storage(self, bias):

@@ -2,16 +2,15 @@ from warnings import warn
 
 import torch
 
-from gromo.modules.growing_module import AdditionGrowingModule, GrowingModule
+from gromo.modules.growing_module import GrowingModule, MergeGrowingModule
 from gromo.utils.tensor_statistic import TensorStatistic
-from gromo.utils.tools import compute_optimal_added_parameters
 from gromo.utils.utils import global_device
 
 
-class LinearAdditionGrowingModule(AdditionGrowingModule):
+class LinearMergeGrowingModule(MergeGrowingModule):
     def __init__(
         self,
-        post_addition_function: torch.nn.Module = torch.nn.Identity(),
+        post_merge_function: torch.nn.Module = torch.nn.Identity(),
         previous_modules=None,
         next_modules=None,
         allow_growing: bool = False,
@@ -25,8 +24,8 @@ class LinearAdditionGrowingModule(AdditionGrowingModule):
         self.in_features = in_features
         self.out_features = in_features
         # TODO: check if we can automatically get the input shape
-        super(LinearAdditionGrowingModule, self).__init__(
-            post_addition_function=post_addition_function,
+        super(LinearMergeGrowingModule, self).__init__(
+            post_merge_function=post_merge_function,
             previous_modules=previous_modules,
             next_modules=next_modules,
             allow_growing=allow_growing,
@@ -39,7 +38,7 @@ class LinearAdditionGrowingModule(AdditionGrowingModule):
         )
 
     def set_next_modules(
-        self, next_modules: list["AdditionGrowingModule | GrowingModule"]
+        self, next_modules: list["MergeGrowingModule | GrowingModule"]
     ) -> None:
         """
         Set the next modules of the current module.
@@ -60,7 +59,7 @@ class LinearAdditionGrowingModule(AdditionGrowingModule):
         ), f"The output features must match the input features of the next modules."
 
     def set_previous_modules(
-        self, previous_modules: list["AdditionGrowingModule | GrowingModule"]
+        self, previous_modules: list["MergeGrowingModule | GrowingModule"]
     ) -> None:
         """
         Set the previous modules of the current module.
@@ -82,7 +81,7 @@ class LinearAdditionGrowingModule(AdditionGrowingModule):
         self.previous_modules = previous_modules if previous_modules else []
         self.total_in_features = 0
         for module in self.previous_modules:
-            if not isinstance(module, (LinearGrowingModule, LinearAdditionGrowingModule)):
+            if not isinstance(module, (LinearGrowingModule, LinearMergeGrowingModule)):
                 raise TypeError("The previous modules must be LinearGrowingModule.")
             if module.out_features != self.in_features:
                 raise ValueError(
@@ -126,7 +125,7 @@ class LinearAdditionGrowingModule(AdditionGrowingModule):
             full activity tensor
         """
         # TODO: optimize the construction of the full activity tensor
-        # the addition module should directly store the full activity tensor
+        # the merge module should directly store the full activity tensor
         # and not access it in the previous modules
         assert self.previous_modules, f"No previous modules for {self.name}."
         full_activity = torch.ones(
@@ -136,7 +135,7 @@ class LinearAdditionGrowingModule(AdditionGrowingModule):
         current_index = 0
         for (
             module
-        ) in self.previous_modules:  # FIXME: what if a previous module is a addition
+        ) in self.previous_modules:  # FIXME: what if a previous module is a merge
             if module.use_bias:
                 full_activity[:, current_index : current_index + module.in_features] = (
                     module.input
@@ -321,8 +320,8 @@ class LinearGrowingModule(GrowingModule):
         out_features: int,
         use_bias: bool = True,
         post_layer_function: torch.nn.Module = torch.nn.Identity(),
-        previous_module: GrowingModule | AdditionGrowingModule | None = None,
-        next_module: GrowingModule | AdditionGrowingModule | None = None,
+        previous_module: GrowingModule | MergeGrowingModule | None = None,
+        next_module: GrowingModule | MergeGrowingModule | None = None,
         allow_growing: bool = False,
         device: torch.device | None = None,
         name: str | None = None,
@@ -361,8 +360,8 @@ class LinearGrowingModule(GrowingModule):
             return torch.func.grad(self.previous_module.post_layer_function)(
                 torch.tensor(1e-5)
             )
-        elif isinstance(self.previous_module, AdditionGrowingModule):
-            return torch.func.grad(self.previous_module.post_addition_function)(
+        elif isinstance(self.previous_module, MergeGrowingModule):
+            return torch.func.grad(self.previous_module.post_merge_function)(
                 torch.tensor([1e-5])
             )
         else:
@@ -433,11 +432,12 @@ class LinearGrowingModule(GrowingModule):
         assert (
             self.input is not None
         ), f"The input must be stored to compute the update of S. (error in {self.name})"
+        input_extended = self.input_extended
         return (
             torch.einsum(
                 "ij,ik->jk",
-                torch.flatten(self.input_extended, 0, -2),
-                torch.flatten(self.input_extended, 0, -2),
+                torch.flatten(input_extended, 0, -2),
+                torch.flatten(input_extended, 0, -2),
             ),
             torch.tensor(self.input.shape[:-1]).prod().int().item(),
         )
@@ -507,7 +507,7 @@ class LinearGrowingModule(GrowingModule):
                 ),
                 torch.tensor(self.input.shape[:-1]).prod().int().item(),
             )
-        elif isinstance(self.previous_module, LinearAdditionGrowingModule):
+        elif isinstance(self.previous_module, LinearMergeGrowingModule):
             if self.previous_module.number_of_successors > 1:
                 warn("The previous module has multiple successors.")
             return (
@@ -548,7 +548,7 @@ class LinearGrowingModule(GrowingModule):
                 ),
                 torch.tensor(self.input.shape[:-1]).prod().int().item(),
             )
-        elif isinstance(self.previous_module, LinearAdditionGrowingModule):
+        elif isinstance(self.previous_module, LinearMergeGrowingModule):
             return (
                 torch.einsum(
                     "ij,ik->jk",
@@ -599,9 +599,9 @@ class LinearGrowingModule(GrowingModule):
             )
         elif isinstance(self.previous_module, LinearGrowingModule):
             return self.previous_module.tensor_s
-        elif isinstance(self.previous_module, LinearAdditionGrowingModule):
+        elif isinstance(self.previous_module, LinearMergeGrowingModule):
             raise NotImplementedError(
-                f"S growth is not implemented for module preceded by an LinearAdditionGrowingModule."
+                f"S growth is not implemented for module preceded by an LinearMergeGrowingModule."
                 " (error in {self.name})"
             )
         else:
@@ -899,7 +899,7 @@ class LinearGrowingModule(GrowingModule):
         if sub_select_previous:
             if isinstance(self.previous_module, LinearGrowingModule):
                 self.previous_module._sub_select_added_output_dimension(keep_neurons)
-            elif isinstance(self.previous_module, LinearAdditionGrowingModule):
+            elif isinstance(self.previous_module, LinearMergeGrowingModule):
                 raise NotImplementedError
             else:
                 raise NotImplementedError(
@@ -908,94 +908,6 @@ class LinearGrowingModule(GrowingModule):
                 )
 
     # Optimal update computation
-    def compute_optimal_delta(
-        self,
-        update: bool = True,
-        dtype: torch.dtype = torch.float32,
-        force_pseudo_inverse: bool = False,
-    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | float]:
-        """
-        Compute the optimal delta for the layer using current S and M tensors.
-
-        dW* = M S[-1]^-1 (if needed we use the pseudo-inverse)
-
-        Compute dW* (and dBias* if needed) and update the optimal_delta_layer attribute.
-        L(A + gamma * B * dW) = L(A) - gamma * d + o(gamma)
-        where d is the first order decrease and gamma the scaling factor.
-
-        Parameters
-        ----------
-        update: bool
-            if True update the optimal delta layer attribute
-        dtype: torch.dtype
-            dtype for S and M during the computation
-        force_pseudo_inverse: bool
-            if True, use the pseudo-inverse to compute the optimal delta even if the
-            matrix is invertible
-
-        Returns
-        -------
-        tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | float]
-            optimal delta for the weights, the biases if needed and the first order decrease
-        """
-        tensor_s = self.tensor_s()
-        tensor_m = self.tensor_m()
-
-        if tensor_s.dtype != dtype:
-            tensor_s = tensor_s.to(dtype=dtype)
-        if tensor_m.dtype != dtype:
-            tensor_m = tensor_m.to(dtype=dtype)
-
-        if not force_pseudo_inverse:
-            try:
-                self.delta_raw = torch.linalg.solve(tensor_s, tensor_m).t()
-            except torch.linalg.LinAlgError:
-                force_pseudo_inverse = True
-                # self.delta_raw = torch.linalg.lstsq(tensor_s, tensor_m).solution.t()
-                # do not use lstsq because it does not work with the GPU
-                warn(
-                    f"Using the pseudo-inverse for the computation of the optimal delta "
-                    f"for {self.name}."
-                )
-        if force_pseudo_inverse:
-            self.delta_raw = (torch.linalg.pinv(tensor_s) @ tensor_m).t()
-
-        assert self.delta_raw is not None, "self.delta_raw should be computed by now."
-        assert (
-            self.delta_raw.isnan().sum() == 0
-        ), f"The optimal delta should not contain NaN values for {self.name}."
-        self.parameter_update_decrease = torch.trace(tensor_m @ self.delta_raw)
-        if self.parameter_update_decrease < 0:
-            warn(
-                f"The parameter update decrease should be positive, "
-                f"but got {self.parameter_update_decrease=} for layer {self.name}."
-            )
-            if not force_pseudo_inverse:
-                warn(
-                    f"Trying to use the pseudo-inverse for {self.name} with torch.float64."
-                )
-                return self.compute_optimal_delta(
-                    update=update, dtype=torch.float64, force_pseudo_inverse=True
-                )
-            else:
-                warn(
-                    f"Failed to compute the optimal delta for {self.name}, set"
-                    f"delta to zero."
-                )
-                self.delta_raw = torch.zeros_like(self.delta_raw)
-        self.delta_raw = self.delta_raw.to(dtype=torch.float32)
-
-        if self.use_bias:
-            delta_weight = self.delta_raw[:, :-1]
-            delta_bias = self.delta_raw[:, -1]
-        else:
-            delta_weight = self.delta_raw
-            delta_bias = None
-
-        if update:
-            self.optimal_delta_layer = self.layer_of_tensor(delta_weight, delta_bias)
-        return delta_weight, delta_bias, self.parameter_update_decrease
-
     def compute_optimal_added_parameters(
         self,
         numerical_threshold: float = 1e-15,
@@ -1025,29 +937,11 @@ class LinearGrowingModule(GrowingModule):
         tuple[torch.Tensor, torch.Tensor | None, torch.Tensor, torch.Tensor]
             optimal added weights alpha weights, alpha bias, omega and eigenvalues lambda
         """
-        try:
-            matrix_n = self.tensor_n
-        except AttributeError as e:
-            raise AttributeError(
-                "It seems that the tensor N is not accessible. I have no idea why this occurs sometimes."
-            ) from e
-
-        assert self.previous_module, (
-            f"No previous module for {self.name}."
-            "Therefore neuron addition is not possible."
-        )
-        matrix_s = self.tensor_s_growth()
-
-        if matrix_n.dtype != dtype:
-            matrix_n = matrix_n.to(dtype=dtype)
-        if matrix_s.dtype != dtype:
-            matrix_s = matrix_s.to(dtype=dtype)
-        alpha, omega, self.eigenvalues_extension = compute_optimal_added_parameters(
-            matrix_s=matrix_s,
-            matrix_n=matrix_n,
+        alpha, omega, self.eigenvalues_extension = self._auxiliary_compute_alpha_omega(
             numerical_threshold=numerical_threshold,
             statistical_threshold=statistical_threshold,
             maximum_added_neurons=maximum_added_neurons,
+            dtype=dtype,
         )
         k = self.eigenvalues_extension.shape[0]
         assert alpha.shape[0] == omega.shape[1], (
@@ -1060,9 +954,6 @@ class LinearGrowingModule(GrowingModule):
         assert omega.shape == (self.out_features, k), (
             f"omega should have shape {(self.out_features, k)}, " f"but got {omega.shape}"
         )
-        alpha = alpha.to(dtype=torch.float32)
-        omega = omega.to(dtype=torch.float32)
-        self.eigenvalues_extension = self.eigenvalues_extension.to(dtype=torch.float32)
 
         if self.previous_module.use_bias:
             alpha_weight = alpha[:, :-1]
@@ -1085,7 +976,7 @@ class LinearGrowingModule(GrowingModule):
                 self.previous_module.extended_output_layer = self.layer_of_tensor(
                     alpha_weight, alpha_bias
                 )
-            elif isinstance(self.previous_module, LinearAdditionGrowingModule):
+            elif isinstance(self.previous_module, LinearMergeGrowingModule):
                 raise NotImplementedError
             else:
                 raise NotImplementedError(
