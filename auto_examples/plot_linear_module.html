@@ -305,6 +305,7 @@
 <li class="toctree-l1"><a class="reference internal" href="plot_growing_network.html">Simple Growing Container Example</a></li>
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">Minimal Linear Growing Layers</a></li>
 <li class="toctree-l1"><a class="reference internal" href="plot_mlp_run.html">MLP Example with Growing Layers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="plot_tutorial.html">GroMo tutorial</a></li>
 </ul>
 </div>
 </nav></div>
@@ -440,9 +441,7 @@ to download the full example code.</p>
 LinearGrowingModule(l1) module with 2 parameters (self._allow_growing=False, self.store_input=True, self.store_pre_activity=True).
 LinearGrowingModule(l2) module with 2 parameters (self._allow_growing=False, self.store_input=True, self.store_pre_activity=True).
 LinearGrowingModule(l3) module with 2 parameters (self._allow_growing=False, self.store_input=True, self.store_pre_activity=True).
-loss: 6.006168842315674
-/home/runner/work/gromo/gromo/src/gromo/modules/growing_module.py:1210: UserWarning: Using the pseudo-inverse for the computation of the optimal delta for LinearGrowingModule(l2).
-  warnings.warn(
+loss: 2.300309181213379
 </pre></div>
 </div>
 <p>Print parameters before and after applying the optimal update</p>
@@ -491,36 +490,36 @@ loss: 6.006168842315674
     <a href="../generated/gromo.modules.growing_module.GrowingModule.html#gromo.modules.growing_module.GrowingModule.compute_optimal_updates" title="gromo.modules.growing_module.GrowingModule.compute_optimal_updates" class="sphx-glr-backref-module-gromo-modules-growing_module sphx-glr-backref-type-py-method"><span class="n">layer</span><span class="o">.</span><span class="n">compute_optimal_updates</span></a><span class="p">()</span>
 </pre></div>
 </div>
-<div class="sphx-glr-script-out highlight-none notranslate"><div class="highlight"><pre><span></span>l2.first_order_improvement=tensor(0.0072)
+<div class="sphx-glr-script-out highlight-none notranslate"><div class="highlight"><pre><span></span>l2.first_order_improvement=tensor(0.0046)
 l2.weight=Parameter containing:
-tensor([[0.2573]], requires_grad=True)
+tensor([[-0.3590]], requires_grad=True)
 l2.bias=Parameter containing:
-tensor([0.7451], requires_grad=True)
+tensor([0.6558], requires_grad=True)
 l2.optimal_delta_layer=Linear(in_features=1, out_features=1, bias=True)
-l2.parameter_update_decrease=tensor(0.0014)
+l2.parameter_update_decrease=tensor(0.0009)
 l2.extended_input_layer=Linear(in_features=1, out_features=1, bias=True)
 l2.extended_input_layer.weight=Parameter containing:
-tensor([[0.2758]], requires_grad=True)
+tensor([[0.2465]], requires_grad=True)
 l2.extended_input_layer.bias=Parameter containing:
 tensor([0.], requires_grad=True)
 l1.extended_output_layer=Linear(in_features=1, out_features=1, bias=True)
-l2.eigenvalues_extension=tensor([0.0761])
-loss: 5.7166900634765625, 0.28947877883911133 improvement
+l2.eigenvalues_extension=tensor([0.0608])
+loss: 2.1116726398468018, 0.18863654136657715 improvement
 ------- New weights -------
 l1.weight=Parameter containing:
-tensor([[1.9562e-01],
-        [1.0790e-08]], requires_grad=True)
+tensor([[0.5229],
+        [0.0814]], requires_grad=True)
 l2.weight=Parameter containing:
-tensor([[0.2573, 0.2758]], requires_grad=True)
+tensor([[-0.3304,  0.2465]], requires_grad=True)
 l3.weight=Parameter containing:
-tensor([[-0.5380]], requires_grad=True)
+tensor([[-0.4348]], requires_grad=True)
 ------- New biases -------
 l1.bias=Parameter containing:
-tensor([-0.6392, -0.2758], requires_grad=True)
+tensor([ 0.2031, -0.2337], requires_grad=True)
 l2.bias=Parameter containing:
-tensor([0.7070], requires_grad=True)
+tensor([0.6176], requires_grad=True)
 l3.bias=Parameter containing:
-tensor([-0.0238], requires_grad=True)
+tensor([0.0818], requires_grad=True)
 LinearGrowingModule(l1) module with 4 parameters.
         Layer : Linear(in_features=1, out_features=2, bias=True)
         Post layer function : ReLU()
@@ -563,12 +562,12 @@ LinearGrowingModule(l3) module with 2 parameters.
         Optimal delta layer : None
         Extended input layer : None
         Extended output layer : None
-loss: 5.7166900634765625
+loss: 2.3758721351623535
 /home/runner/work/gromo/gromo/src/gromo/modules/growing_module.py:1210: UserWarning: Using the pseudo-inverse for the computation of the optimal delta for LinearGrowingModule(l2).
   warnings.warn(
 </pre></div>
 </div>
-<p class="sphx-glr-timing"><strong>Total running time of the script:</strong> (0 minutes 1.083 seconds)</p>
+<p class="sphx-glr-timing"><strong>Total running time of the script:</strong> (0 minutes 1.137 seconds)</p>
 <div class="sphx-glr-footer sphx-glr-footer-example docutils container" id="sphx-glr-download-auto-examples-plot-linear-module-py">
 <div class="sphx-glr-download sphx-glr-download-jupyter docutils container">
 <p><a class="reference download internal" download="" href="../_downloads/03054ce988804abc93f04bf5243c4932/plot_linear_module.ipynb"><code class="xref download docutils literal notranslate"><span class="pre">Download</span> <span class="pre">Jupyter</span> <span class="pre">notebook:</span> <span class="pre">plot_linear_module.ipynb</span></code></a></p>
