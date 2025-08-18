@@ -108,6 +108,12 @@ class ResNetBasicBlock(GrowingContainer):
             ),
         )
 
+        # Initialize the growing layers list with all RestrictedConv2dGrowingBlock instances
+        self._growing_layers = []
+        for stage in self.stages:
+            for block in stage:
+                self._growing_layers.append(block)
+
     def append_block(
         self,
         stage_index: int = 0,
@@ -125,35 +131,36 @@ class ResNetBasicBlock(GrowingContainer):
         input_channels = stage[-1].out_features
         output_channels = input_channels
         hidden_channels = 0
-        stage.append(
-            RestrictedConv2dGrowingBlock(
-                in_channels=input_channels,
-                out_channels=output_channels,
-                hidden_channels=hidden_channels,
-                kwargs_first_layer={
-                    "kernel_size": input_block_kernel_size,
-                    "padding": 1,
-                    "use_bias": False,
-                    "stride": 1,
-                },
-                kwargs_layer={
-                    "kernel_size": output_block_kernel_size,
-                    "padding": 1,
-                    "use_bias": False,
-                },
-                pre_activation=nn.Sequential(
-                    nn.BatchNorm2d(input_channels, device=self.device),
-                    self.activation,
-                ),
-                mid_activation=nn.Sequential(
-                    GrowingBatchNorm2d(hidden_channels, device=self.device),
-                    self.activation,
-                ),
-                extended_mid_activation=self.activation,
-                name=f"Stage {stage_index} Block {len(stage)}",
-                device=self.device,
-            )
+        new_block = RestrictedConv2dGrowingBlock(
+            in_channels=input_channels,
+            out_channels=output_channels,
+            hidden_channels=hidden_channels,
+            kwargs_first_layer={
+                "kernel_size": input_block_kernel_size,
+                "padding": 1,
+                "use_bias": False,
+                "stride": 1,
+            },
+            kwargs_layer={
+                "kernel_size": output_block_kernel_size,
+                "padding": 1,
+                "use_bias": False,
+            },
+            pre_activation=nn.Sequential(
+                nn.BatchNorm2d(input_channels, device=self.device),
+                self.activation,
+            ),
+            mid_activation=nn.Sequential(
+                GrowingBatchNorm2d(hidden_channels, device=self.device),
+                self.activation,
+            ),
+            extended_mid_activation=self.activation,
+            name=f"Stage {stage_index} Block {len(stage)}",
+            device=self.device,
         )
+        stage.append(new_block)
+        # Add the new block to the growing layers list
+        self._growing_layers.append(new_block)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.pre_net(x)
