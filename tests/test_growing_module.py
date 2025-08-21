@@ -1,3 +1,4 @@
+import unittest.mock
 import warnings
 from unittest import TestCase, main
 
@@ -8,6 +9,7 @@ from gromo.modules.linear_growing_module import (
     LinearGrowingModule,
     LinearMergeGrowingModule,
 )
+from gromo.utils.tensor_statistic import TensorStatistic
 from gromo.utils.utils import global_device
 from tests.torch_unittest import TorchTestCase
 from tests.unittest_tools import unittest_parametrize
@@ -213,8 +215,6 @@ class TestGrowingModule(TorchTestCase):
 
     def test_edge_case_minimal_dimensions(self):
         """Test with minimal dimensions for edge case coverage."""
-        from gromo.modules.linear_growing_module import LinearGrowingModule
-
         # Create a linear growing module with minimal dimensions
         layer = LinearGrowingModule(1, 1, device=global_device(), name="tiny")
 
@@ -240,6 +240,161 @@ class TestGrowingModule(TorchTestCase):
         # Test reset
         layer.reset_computation()
         self.assertFalse(layer.store_input)
+
+    def test_tensor_s_growth_no_previous_module(self):
+        """Test tensor_s_growth raises ValueError when no previous module."""
+        layer = LinearGrowingModule(3, 2, device=global_device(), name="layer")
+        layer.previous_module = None
+
+        with self.assertRaises(ValueError) as context:
+            _ = layer.tensor_s_growth
+        self.assertIn("No previous module", str(context.exception))
+        self.assertIn("Thus S growth is not defined", str(context.exception))
+
+    def test_tensor_s_growth_with_growing_module_previous(self):
+        """Test tensor_s_growth redirects to previous_module.tensor_s for GrowingModule."""
+        # Create a chain: prev_layer -> layer
+        prev_layer = LinearGrowingModule(3, 2, device=global_device(), name="prev")
+        layer = LinearGrowingModule(2, 4, device=global_device(), name="layer")
+        layer.previous_module = prev_layer
+
+        # Initialize computation on previous layer to have tensor_s
+        prev_layer.init_computation()
+        x = torch.randn(5, 3, device=global_device())
+        output = prev_layer(x)
+
+        # Create a loss and backward pass to generate gradients
+        loss = torch.norm(output)
+        loss.backward()
+
+        prev_layer.update_computation()
+
+        # Test that tensor_s_growth redirects to previous_module.tensor_s
+        tensor_s_growth = layer.tensor_s_growth
+        self.assertIs(tensor_s_growth, prev_layer.tensor_s)
+
+        # Verify it's the same TensorStatistic object
+        self.assertIsInstance(tensor_s_growth, TensorStatistic)
+
+    def test_tensor_s_growth_with_merge_growing_module_previous(self):
+        """Test tensor_s_growth raises NotImplementedError for MergeGrowingModule previous."""
+        merge_layer = LinearMergeGrowingModule(
+            in_features=3, device=global_device(), name="merge"
+        )
+        layer = LinearGrowingModule(3, 2, device=global_device(), name="layer")
+        layer.previous_module = merge_layer
+
+        with self.assertRaises(NotImplementedError) as context:
+            _ = layer.tensor_s_growth
+        self.assertIn(
+            "S growth is not implemented for module preceded by an MergeGrowingModule",
+            str(context.exception),
+        )
+
+    def test_tensor_s_growth_with_unsupported_previous_module(self):
+        """Test tensor_s_growth raises NotImplementedError for unsupported previous module types."""
+        layer = LinearGrowingModule(3, 2, device=global_device(), name="layer")
+        layer.previous_module = torch.nn.Linear(2, 3)  # Regular Linear layer
+
+        with self.assertRaises(NotImplementedError) as context:
+            _ = layer.tensor_s_growth
+        self.assertIn("S growth is not implemented yet", str(context.exception))
+
+    def test_tensor_s_growth_setter_raises_error(self):
+        """Test that setting tensor_s_growth raises AttributeError."""
+        layer = LinearGrowingModule(3, 2, device=global_device(), name="layer")
+
+        with self.assertRaises(AttributeError) as context:
+            layer.tensor_s_growth = "some_value"
+        self.assertIn("You tried to set tensor_s_growth", str(context.exception))
+        self.assertIn("This is not allowed", str(context.exception))
+
+    @unittest_parametrize(({"bias": True}, {"bias": False}))
+    def test_tensor_s_growth_functional_behavior(self, bias):
+        """Test tensor_s_growth functional behavior with different bias settings."""
+        # Create a complete chain to test functional behavior
+        layer1 = LinearGrowingModule(
+            3, 2, use_bias=bias, device=global_device(), name="layer1"
+        )
+        layer2 = LinearGrowingModule(
+            2, 4, use_bias=bias, device=global_device(), name="layer2"
+        )
+        layer1.next_module = layer2
+        layer2.previous_module = layer1
+
+        # Initialize computations
+        layer1.init_computation()
+        layer2.init_computation()
+
+        # Forward pass
+        x = torch.randn(5, 3, device=global_device())
+        out1 = layer1(x)
+        out2 = layer2(out1)
+
+        # Backward pass
+        loss = torch.norm(out2)
+        loss.backward()
+
+        # Update computations
+        layer1.update_computation()
+        layer2.update_computation()
+
+        # Test tensor_s_growth access
+        tensor_s_growth = layer2.tensor_s_growth
+        self.assertIs(tensor_s_growth, layer1.tensor_s)
+
+        # Test that tensor_s_growth returns the correct tensor
+        growth_tensor = tensor_s_growth()
+        expected_size = layer1.in_features + (1 if layer1.use_bias else 0)
+        self.assertEqual(growth_tensor.shape, (expected_size, expected_size))
+
+    def test_tensor_s_growth_multiple_layer_chain(self):
+        """Test tensor_s_growth in a longer chain of modules."""
+        # Create chain: layer1 -> layer2 -> layer3
+        layer1 = LinearGrowingModule(3, 2, device=global_device(), name="layer1")
+        layer2 = LinearGrowingModule(2, 3, device=global_device(), name="layer2")
+        layer3 = LinearGrowingModule(3, 1, device=global_device(), name="layer3")
+
+        layer1.next_module = layer2
+        layer2.previous_module = layer1
+        layer2.next_module = layer3
+        layer3.previous_module = layer2
+
+        # Initialize computations
+        layer1.init_computation()
+        layer2.init_computation()
+        layer3.init_computation()
+
+        # Forward pass through the chain
+        x = torch.randn(4, 3, device=global_device())
+        out1 = layer1(x)
+        out2 = layer2(out1)
+        out3 = layer3(out2)
+
+        # Backward pass
+        loss = torch.norm(out3)
+        loss.backward()
+
+        # Update computations
+        layer1.update_computation()
+        layer2.update_computation()
+        layer3.update_computation()
+
+        # Test tensor_s_growth for each layer
+        # layer2.tensor_s_growth should point to layer1.tensor_s
+        self.assertIs(layer2.tensor_s_growth, layer1.tensor_s)
+
+        # layer3.tensor_s_growth should point to layer2.tensor_s
+        self.assertIs(layer3.tensor_s_growth, layer2.tensor_s)
+
+        # Verify the shapes are correct
+        growth_tensor_2 = layer2.tensor_s_growth()
+        expected_size_2 = layer1.in_features + (1 if layer1.use_bias else 0)
+        self.assertEqual(growth_tensor_2.shape, (expected_size_2, expected_size_2))
+
+        growth_tensor_3 = layer3.tensor_s_growth()
+        expected_size_3 = layer2.in_features + (1 if layer2.use_bias else 0)
+        self.assertEqual(growth_tensor_3.shape, (expected_size_3, expected_size_3))
 
 
 class TestMergeGrowingModule(TorchTestCase):
@@ -428,6 +583,116 @@ class TestGrowingModuleEdgeCases(TorchTestCase):
         # Test that the isinstance check works
         self.assertIsInstance(growing_module.previous_module, MergeGrowingModule)
 
+    def test_auxiliary_compute_alpha_omega_use_projected_gradient_false(self):
+        """Test _auxiliary_compute_alpha_omega with use_projected_gradient=False."""
+        # Set up a more complex scenario with a LinearGrowingModule that supports the required methods
+        prev_module = LinearGrowingModule(3, 4, device=global_device(), name="prev")
+        growing_module = LinearGrowingModule(
+            4, 5, device=global_device(), previous_module=prev_module, name="main"
+        )
+
+        # Initialize computation and run some data through
+        prev_module.init_computation()
+        growing_module.init_computation()
+
+        # Generate some sample data and run forward/backward pass
+        x = torch.randn(10, 3, device=global_device())
+        prev_module.store_input = True
+        growing_module.store_input = True
+
+        output1 = prev_module(x)
+        output2 = growing_module(output1)
+        loss = torch.norm(output2)
+        loss.backward()
+
+        # Update computations to generate tensor statistics
+        prev_module.update_computation()
+        growing_module.update_computation()
+
+        # Now test the _auxiliary_compute_alpha_omega method with use_projected_gradient=False
+        alpha, omega, eigenvals = growing_module._auxiliary_compute_alpha_omega(
+            use_projected_gradient=False
+        )
+        # Verify that we get valid outputs
+        self.assertIsInstance(alpha, torch.Tensor)
+        self.assertIsInstance(omega, torch.Tensor)
+        self.assertIsInstance(eigenvals, torch.Tensor)
+
+    def test_compute_optimal_added_parameters_use_projected_gradient_false(self):
+        """Test compute_optimal_added_parameters with use_projected_gradient=False."""
+        # Set up a LinearGrowingModule with proper connections
+        prev_module = LinearGrowingModule(3, 4, device=global_device(), name="prev")
+        growing_module = LinearGrowingModule(
+            4, 5, device=global_device(), previous_module=prev_module, name="main"
+        )
+
+        # Initialize computation and run some data through
+        prev_module.init_computation()
+        growing_module.init_computation()
+
+        # Generate some sample data and run forward/backward pass
+        x = torch.randn(10, 3, device=global_device())
+        prev_module.store_input = True
+        growing_module.store_input = True
+
+        output1 = prev_module(x)
+        output2 = growing_module(output1)
+        loss = torch.norm(output2)
+        loss.backward()
+
+        # Update computations to generate tensor statistics
+        prev_module.update_computation()
+        growing_module.update_computation()
+
+        # Test the compute_optimal_added_parameters method with use_projected_gradient=False
+        alpha_weights, alpha_bias, omega, eigenvals = (
+            growing_module.compute_optimal_added_parameters(use_projected_gradient=False)
+        )
+        # Verify that we get valid outputs
+        self.assertIsInstance(alpha_weights, torch.Tensor)
+        self.assertIsInstance(omega, torch.Tensor)
+        self.assertIsInstance(eigenvals, torch.Tensor)
+        # alpha_bias can be None
+        if alpha_bias is not None:
+            self.assertIsInstance(alpha_bias, torch.Tensor)
+
+    def test_compute_optimal_updates_use_projected_gradient_false(self):
+        """Test compute_optimal_updates with use_projected_gradient=False."""
+        # Set up a LinearGrowingModule with proper connections
+        prev_module = LinearGrowingModule(3, 4, device=global_device(), name="prev")
+        growing_module = LinearGrowingModule(
+            4, 5, device=global_device(), previous_module=prev_module, name="main"
+        )
+
+        # Initialize computation and run some data through
+        prev_module.init_computation()
+        growing_module.init_computation()
+
+        # Generate some sample data and run forward/backward pass
+        x = torch.randn(10, 3, device=global_device())
+        prev_module.store_input = True
+        growing_module.store_input = True
+
+        output1 = prev_module(x)
+        output2 = growing_module(output1)
+        loss = torch.norm(output2)
+        loss.backward()
+
+        # Update computations to generate tensor statistics
+        prev_module.update_computation()
+        growing_module.update_computation()
+
+        # Test the compute_optimal_updates method with use_projected_gradient=False
+        updates = growing_module.compute_optimal_updates(use_projected_gradient=False)
+        # Verify that we get valid outputs (should be a tuple of tensors)
+        self.assertIsInstance(updates, tuple)
+        self.assertEqual(len(updates), 2)
+        alpha_weight, alpha_bias = updates
+        self.assertIsInstance(alpha_weight, torch.Tensor)
+        # alpha_bias can be None
+        if alpha_bias is not None:
+            self.assertIsInstance(alpha_bias, torch.Tensor)
+
 
 class TestMergeGrowingModuleUpdateComputation(TorchTestCase):
     """Test the update_computation method for differential coverage improvement."""
@@ -609,6 +874,165 @@ class TestMergeGrowingModuleUpdateComputation(TorchTestCase):
         prev_module.reset_computation()
 
         self.assertTrue(True)  # If we get here, the lines were executed
+
+
+class TestMergeGrowingModuleComputeOptimalDelta(TorchTestCase):
+    """Comprehensive tests for MergeGrowingModule.compute_optimal_delta method."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        torch.manual_seed(0)
+
+        # Create a simpler setup with only one previous module for easier testing
+        self.in_features = 3
+        self.out_features = 3
+        self.merge_module = LinearMergeGrowingModule(
+            in_features=self.in_features, device=global_device(), name="test_merge"
+        )
+
+        # Create one previous module for simpler setup
+        self.prev_module = LinearGrowingModule(
+            in_features=2,
+            out_features=self.in_features,  # Must match merge module in_features
+            device=global_device(),
+            name="prev1",
+        )
+
+        # Set up the merge module with previous modules
+        self.merge_module.set_previous_modules([self.prev_module])
+
+    def _setup_computation_with_data(self, num_passes=3):
+        """Helper to set up computation with actual data flow."""
+        # Initialize computations
+        self.prev_module.init_computation()
+        self.merge_module.init_computation()
+
+        # Run multiple forward/backward passes to build up statistics
+        for _ in range(num_passes):
+            # Clear gradients
+            for p in self.prev_module.parameters():
+                if p.grad is not None:
+                    p.grad.zero_()
+
+            # Generate test inputs
+            x = torch.randn(5, 2, device=global_device(), requires_grad=True)
+
+            # Forward pass through previous module
+            output = self.prev_module(x)
+
+            # Forward pass through merge module
+            merge_output = self.merge_module(output)
+
+            # Backward pass to create gradients
+            loss = torch.norm(merge_output)
+            loss.backward(retain_graph=True)
+
+            # Update statistics
+            self.prev_module.update_computation()
+            self.merge_module.update_computation()
+
+    def test_compute_optimal_delta_basic_functionality(self):
+        """Test basic compute_optimal_delta functionality."""
+        self._setup_computation_with_data()
+
+        # Test basic call - should return None by default
+        result = self.merge_module.compute_optimal_delta()
+        self.assertIsNone(result)
+
+        # Verify that previous modules now have optimal_delta_layer set
+        self.assertIsNotNone(self.prev_module.optimal_delta_layer)
+
+    def test_compute_optimal_delta_return_deltas(self):
+        """Test compute_optimal_delta with return_deltas=True."""
+        self._setup_computation_with_data()
+
+        # Test with return_deltas=True
+        deltas = self.merge_module.compute_optimal_delta(return_deltas=True)
+
+        # Should return list of tuples
+        self.assertIsInstance(deltas, list)
+        assert deltas is not None  # Type narrowing for mypy
+        self.assertEqual(len(deltas), 1)  # One previous module
+
+        # Check delta tuple
+        delta_w, delta_b = deltas[0]
+        prev_module = self.merge_module.previous_modules[0]
+
+        # Check weight delta shape
+        expected_shape = (prev_module.out_features, prev_module.in_features)
+        self.assertEqual(delta_w.shape, expected_shape)
+        self.assertIsInstance(delta_w, torch.Tensor)
+
+        # Check bias delta
+        if prev_module.use_bias:
+            self.assertIsNotNone(delta_b)
+            self.assertEqual(delta_b.shape, (prev_module.out_features,))
+        else:
+            self.assertIsNone(delta_b)
+
+    def test_compute_optimal_delta_no_update(self):
+        """Test compute_optimal_delta with update=False."""
+        self._setup_computation_with_data()
+
+        # Store original optimal_delta_layer state
+        orig_delta = self.prev_module.optimal_delta_layer
+
+        # Call with update=False
+        result = self.merge_module.compute_optimal_delta(update=False)
+
+        # Should not have updated the optimal_delta_layer
+        self.assertEqual(self.prev_module.optimal_delta_layer, orig_delta)
+
+    def test_compute_optimal_delta_force_pseudo_inverse(self):
+        """Test compute_optimal_delta with force_pseudo_inverse=True."""
+        self._setup_computation_with_data()
+
+        # Test with forced pseudo-inverse
+        deltas = self.merge_module.compute_optimal_delta(
+            return_deltas=True, force_pseudo_inverse=True
+        )
+
+        # Should still produce valid results
+        self.assertIsInstance(deltas, list)
+        assert deltas is not None  # Type narrowing for mypy
+        self.assertEqual(len(deltas), 1)
+
+        # Verify deltas are tensors with correct shapes
+        delta_w, delta_b = deltas[0]
+        self.assertIsInstance(delta_w, torch.Tensor)
+        self.assertFalse(torch.isnan(delta_w).any())
+
+    def test_compute_optimal_delta_assertions(self):
+        """Test assertion checks in compute_optimal_delta."""
+        # Test without proper setup (no tensor statistics)
+        with self.assertRaises((AssertionError, ValueError)) as context:
+            self.merge_module.compute_optimal_delta()
+        # Should get either "No previous tensor S" or "tensor statistic has not been computed"
+        self.assertTrue(
+            "No previous tensor S" in str(context.exception)
+            or "tensor statistic has not been computed" in str(context.exception)
+        )
+
+    def test_compute_optimal_delta_matrix_shape_assertions(self):
+        """Test matrix shape assertion checks."""
+        self._setup_computation_with_data()
+
+        # Test actual assertion error propagation by making tools.compute_optimal_delta fail
+        original_func = self.merge_module.compute_optimal_delta
+
+        def mock_method(*args, **kwargs):
+            # Call original but with modified tensor to trigger assertion
+            with unittest.mock.patch.object(
+                self.merge_module, "previous_tensor_s"
+            ) as mock_s:
+                mock_s.return_value = torch.randn(10, 10)  # Wrong size
+                return original_func(*args, **kwargs)
+
+        with unittest.mock.patch.object(
+            self.merge_module, "compute_optimal_delta", side_effect=mock_method
+        ):
+            with self.assertRaises(AssertionError):
+                self.merge_module.compute_optimal_delta()
 
 
 if __name__ == "__main__":
