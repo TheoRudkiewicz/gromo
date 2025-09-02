@@ -22,6 +22,7 @@ class ResNetBasicBlock(GrowingContainer):
         input_block_kernel_size: int = 3,
         output_block_kernel_size: int = 3,
         reduction_factor: float = 0.0,
+        small_inputs: bool = False,
     ) -> None:
         """
         Initialize the ResNet with basic blocks.
@@ -43,26 +44,50 @@ class ResNetBasicBlock(GrowingContainer):
         reduction_factor : float
             Factor to reduce the number of channels in the bottleneck.
             If 0, starts with no channels. If 1, starts with all channels.
+        small_inputs : bool
+            If True, adapt the network for small input images (e.g., CIFAR-10/100).
+            This uses smaller kernels, no stride, and no max pooling in the initial layers.
         """
         super().__init__(
             in_features=in_features, out_features=out_features, device=device
         )
         self.activation = activation.to(device)
+        self.small_inputs = small_inputs
         inplanes = 64
-        self.pre_net = nn.Sequential(
-            nn.Conv2d(
-                in_features,
-                inplanes,
-                kernel_size=7,
-                stride=2,
-                padding=3,
-                bias=False,
-                device=self.device,
-            ),
-            nn.BatchNorm2d(inplanes, device=self.device),
-            self.activation,
-            nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
-        )
+
+        if small_inputs:
+            # For small inputs like CIFAR-10/100 (32x32)
+            # Use 3x3 conv with stride=1, no max pooling
+            self.pre_net = nn.Sequential(
+                nn.Conv2d(
+                    in_features,
+                    inplanes,
+                    kernel_size=3,
+                    stride=1,
+                    padding=1,
+                    bias=False,
+                    device=self.device,
+                ),
+                nn.BatchNorm2d(inplanes, device=self.device),
+                self.activation,
+            )
+        else:
+            # For large inputs like ImageNet (224x224)
+            # Use 7x7 conv with stride=2, followed by max pooling
+            self.pre_net = nn.Sequential(
+                nn.Conv2d(
+                    in_features,
+                    inplanes,
+                    kernel_size=7,
+                    stride=2,
+                    padding=3,
+                    bias=False,
+                    device=self.device,
+                ),
+                nn.BatchNorm2d(inplanes, device=self.device),
+                self.activation,
+                nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
+            )
 
         self.stages = nn.ModuleList()
         nb_stages = 4
@@ -74,6 +99,14 @@ class ResNetBasicBlock(GrowingContainer):
             output_channels = inplanes * (2**i)
             hidden_channels = int(inplanes * (2**i) * reduction_factor)
 
+            # For small inputs, adjust stride behavior
+            # Skip stride=2 for the first stage to preserve spatial resolution
+            stage_stride = 2 if (i > 0 and not (small_inputs and i == 1)) else 1
+            if small_inputs and i == 1:
+                # For small inputs, we might want stride=1 for the first downsampling stage
+                # to avoid losing too much spatial resolution too quickly
+                stage_stride = 1
+
             stage.append(
                 RestrictedConv2dGrowingBlock(
                     in_channels=input_channels,
@@ -83,7 +116,7 @@ class ResNetBasicBlock(GrowingContainer):
                         "kernel_size": input_block_kernel_size,
                         "padding": 1,
                         "use_bias": False,
-                        "stride": 2 if i > 0 else 1,
+                        "stride": stage_stride,
                     },
                     kwargs_layer={
                         "kernel_size": output_block_kernel_size,
@@ -108,7 +141,7 @@ class ResNetBasicBlock(GrowingContainer):
                                 in_channels=input_channels,
                                 out_channels=output_channels,
                                 kernel_size=1,
-                                stride=2,
+                                stride=stage_stride,
                                 bias=False,
                                 device=self.device,
                             ),
@@ -210,58 +243,53 @@ if __name__ == "__main__":
 
     print(f"Using device {global_device()}")
 
-    # Example usage
-    model = ResNetBasicBlock(out_features=10)
-    print(model)
+    # Example usage for ImageNet-sized inputs
+    print("=== ImageNet-style ResNet ===")
+    model_imagenet = ResNetBasicBlock(out_features=10, small_inputs=False)
+    print(model_imagenet)
 
-    # Create a dummy input tensor
-    input_tensor = torch.randn(
-        1, 3, 224, 224, device=global_device()
-    )  # Batch size of 1, 3 channels, 224x224 image
-    # output = model(input_tensor)
-    # print(output.shape)  # Should be (1, 1000) for the output layer
+    # Example usage for CIFAR-sized inputs
+    print("\n=== CIFAR-style ResNet ===")
+    model_cifar = ResNetBasicBlock(out_features=10, small_inputs=True)
+    print(model_cifar)
 
-    summary(model, input_size=(1, 3, 32, 32))
+    # Create dummy input tensors
+    imagenet_input = torch.randn(1, 3, 224, 224, device=global_device())
+    cifar_input = torch.randn(1, 3, 32, 32, device=global_device())
 
-    # model.stages[0][0].init_computation()
-    #
-    # model.zero_grad()
-    # output = model(input_tensor)
-    # error = (output ** 2).sum()
-    # error.backward()
-    # model.stages[0][0].update_computation()
-    #
-    # model.stages[0][0].compute_optimal_updates()
-    #
-    # model.stages[0][0].scaling_factor = 1.0
-    #
-    # _ = model.extended_forward(input_tensor)
-    #
-    # model.stages[0][0].apply_change()
+    print("\n=== ImageNet model summary ===")
+    summary(model_imagenet, input_size=(1, 3, 224, 224))
 
-    model.append_block()
-    print(model)
+    print("\n=== CIFAR model summary ===")
+    summary(model_cifar, input_size=(1, 3, 32, 32))
 
-    empty_block = model.stages[0][1]
+    # Test forward passes
+    print("\n=== Testing forward passes ===")
+    with torch.no_grad():
+        imagenet_output = model_imagenet(imagenet_input)
+        cifar_output = model_cifar(cifar_input)
+        print(f"ImageNet output shape: {imagenet_output.shape}")
+        print(f"CIFAR output shape: {cifar_output.shape}")
+
+    # Test with an appended block
+    model_cifar.append_block()
+    print(f"\n=== CIFAR model after appending block ===")
+    empty_block = model_cifar.stages[0][1]
     empty_block.init_computation()
 
-    print(empty_block.first_layer.__str__(verbose=2))
-    print(empty_block.second_layer.__str__(verbose=2))
-
-    model.zero_grad()
-    output = model(input_tensor)
+    model_cifar.zero_grad()
+    output = model_cifar(cifar_input)
     error = (output**2).sum()
     error.backward()
 
-    print(empty_block.first_layer.input.shape)
-    print(empty_block.second_layer.pre_activity.shape)
+    print(f"Empty block first layer input shape: {empty_block.first_layer.input.shape}")
+    print(
+        f"Empty block second layer pre-activity shape: {empty_block.second_layer.pre_activity.shape}"
+    )
 
     empty_block.update_computation()
-    print(empty_block.second_layer.__str__(verbose=2))
-
     empty_block.compute_optimal_updates()
     empty_block.scaling_factor = 1.0
 
-    _ = model.extended_forward(input_tensor)
-
+    _ = model_cifar.extended_forward(cifar_input)
     empty_block.apply_change()
