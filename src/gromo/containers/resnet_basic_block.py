@@ -21,8 +21,29 @@ class ResNetBasicBlock(GrowingContainer):
         activation: nn.Module = nn.ReLU(),
         input_block_kernel_size: int = 3,
         output_block_kernel_size: int = 3,
-        reduction_factor: float = 0.25,
+        reduction_factor: float = 0.0,
     ) -> None:
+        """
+        Initialize the ResNet with basic blocks.
+
+        Parameters
+        ----------
+        in_features : int
+            Number of input features (channels).
+        out_features : int
+            Number of output features (channels).
+        device : torch.device | str | None
+            Device to run the model on.
+        activation : nn.Module
+            Activation function to use.
+        input_block_kernel_size : int
+            Kernel size for the input block.
+        output_block_kernel_size : int
+            Kernel size for the output block.
+        reduction_factor : float
+            Factor to reduce the number of channels in the bottleneck.
+            If 0, starts with no channels. If 1, starts with all channels.
+        """
         super().__init__(
             in_features=in_features, out_features=out_features, device=device
         )
@@ -200,7 +221,7 @@ if __name__ == "__main__":
     # output = model(input_tensor)
     # print(output.shape)  # Should be (1, 1000) for the output layer
 
-    summary(model, input_size=(1, 3, 224, 224))
+    summary(model, input_size=(1, 3, 32, 32))
 
     # model.stages[0][0].init_computation()
     #
