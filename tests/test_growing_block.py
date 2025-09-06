@@ -2,7 +2,14 @@ import torch
 
 from gromo.containers.growing_block import GrowingBlock, LinearGrowingBlock
 from gromo.utils.utils import global_device
-from tests.torch_unittest import TorchTestCase
+
+
+try:
+    from tests.torch_unittest import TorchTestCase, indicator_batch
+    from tests.unittest_tools import unittest_parametrize
+except ImportError:
+    from torch_unittest import TorchTestCase, indicator_batch
+    from unittest_tools import unittest_parametrize
 
 
 class TestGrowingBlock(TorchTestCase):
@@ -35,6 +42,57 @@ class TestGrowingBlock(TorchTestCase):
         self.assertEqual(kwargs_first, kwargs_layer)
         self.assertEqual(kwargs_second, kwargs_layer)
 
+        # Test with explicit kwargs_first_layer and kwargs_second_layer (covers lines 116 and 126)
+        kwargs_first_explicit = {"use_bias": True, "device": "cpu"}
+        kwargs_second_explicit = {"use_bias": False, "device": "cuda"}
+
+        pre_act, mid_act, kwargs_first, kwargs_second = GrowingBlock.set_default_values(
+            activation=activation,
+            pre_activation=pre_activation,
+            kwargs_layer=kwargs_layer,
+            kwargs_first_layer=kwargs_first_explicit,
+            kwargs_second_layer=kwargs_second_explicit,
+        )
+        self.assertEqual(pre_act, pre_activation)
+        self.assertEqual(mid_act, activation)
+        self.assertEqual(
+            kwargs_first, kwargs_first_explicit
+        )  # Should use explicit value, not kwargs_layer
+        self.assertEqual(
+            kwargs_second, kwargs_second_explicit
+        )  # Should use explicit value, not kwargs_layer
+
+        # Test with only kwargs_first_layer provided (covers line 116)
+        pre_act, mid_act, kwargs_first, kwargs_second = GrowingBlock.set_default_values(
+            activation=None,
+            kwargs_layer=kwargs_layer,
+            kwargs_first_layer=kwargs_first_explicit,
+        )
+        self.assertIsInstance(pre_act, torch.nn.Identity)  # Should fall back to identity
+        self.assertIsInstance(mid_act, torch.nn.Identity)  # Should fall back to identity
+        self.assertEqual(kwargs_first, kwargs_first_explicit)  # Should use explicit value
+        self.assertEqual(kwargs_second, kwargs_layer)  # Should fallback to kwargs_layer
+
+        # Test with only kwargs_second_layer provided (covers line 126)
+        pre_act, mid_act, kwargs_first, kwargs_second = GrowingBlock.set_default_values(
+            activation=activation,
+            kwargs_layer=kwargs_layer,
+            kwargs_second_layer=kwargs_second_explicit,
+        )
+        self.assertEqual(kwargs_first, kwargs_layer)  # Should fallback to kwargs_layer
+        self.assertEqual(
+            kwargs_second, kwargs_second_explicit
+        )  # Should use explicit value
+
+
+class ScalingModule(torch.nn.Module):
+    def __init__(self, scaling_factor: float = 1.0):
+        super(ScalingModule, self).__init__()
+        self.scaling_factor = scaling_factor
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.scaling_factor * x
+
 
 class TestLinearGrowingBlock(TorchTestCase):
     """Test LinearGrowingBlock functionality."""
@@ -43,11 +101,22 @@ class TestLinearGrowingBlock(TorchTestCase):
         torch.manual_seed(0)
         self.device = global_device()
         self.batch_size = 4
-        self.in_features = 6
-        self.out_features = 8
-        self.hidden_features = 5
+        self.in_features = 3
+        self.out_features = 5
+        self.hidden_features = 2
+        self.added_features = 7
+        self.scaling_factor = 0.9
         self.downsample = torch.nn.Linear(
             self.in_features, self.out_features, device=self.device
+        )
+        self.first_layer_extension = torch.nn.Linear(
+            self.in_features, self.added_features, device=self.device
+        )
+        self.second_layer_extension = torch.nn.Linear(
+            self.added_features, self.out_features, device=self.device
+        )
+        self.second_layer_extension_no_downsample = torch.nn.Linear(
+            self.added_features, self.in_features, device=self.device
         )
 
     def test_init_with_zero_features(self):
@@ -306,6 +375,335 @@ class TestLinearGrowingBlock(TorchTestCase):
         expected_stored_input = block.pre_activation(x).detach()
         self.assertAllClose(block.first_layer.input, expected_stored_input)
 
+    def test_extended_forward_zero_features_no_downsample(self):
+        """Test extended_forward with zero hidden features."""
+        block = LinearGrowingBlock(
+            in_features=self.in_features,
+            out_features=self.out_features,
+            hidden_features=0,
+            device=self.device,
+        )
+
+        x = torch.randn(self.batch_size, self.in_features, device=self.device)
+
+        with self.subTest("No extension"):
+            # With zero features and no extension, should return identity
+            output = block.extended_forward(x)
+
+            self.assertAllClose(output, x)
+
+        with self.subTest("With extension"):
+            # With zero features and an extension
+            block.scaling_factor = self.scaling_factor
+            block.first_layer.extended_output_layer = self.first_layer_extension
+            block.second_layer.extended_input_layer = (
+                self.second_layer_extension_no_downsample
+            )
+            output = block.extended_forward(x)
+            expected_output = (
+                torch.nn.Sequential(
+                    block.pre_activation,
+                    self.first_layer_extension,
+                    ScalingModule(self.scaling_factor),
+                    block.first_layer.extended_post_layer_function,
+                    self.second_layer_extension_no_downsample,
+                    ScalingModule(self.scaling_factor),
+                )(x)
+                + x
+            )  # identity downsample
+
+            self.assertAllClose(output, expected_output)
+
+    def test_extended_forward_zero_features_with_downsample(self):
+        """Test extended_forward with zero hidden features and downsample."""
+        block = LinearGrowingBlock(
+            in_features=self.in_features,
+            out_features=self.out_features,
+            hidden_features=0,
+            downsample=self.downsample,
+            device=self.device,
+        )
+
+        x = torch.randn(self.batch_size, self.in_features, device=self.device)
+
+        with self.subTest("No extension"):
+            # With zero features and no extension, should return downsample(x)
+            output = block.extended_forward(x)
+            expected_output = self.downsample(x)
+
+            self.assertAllClose(output, expected_output)
+
+        with self.subTest("With extension"):
+            # With zero features and an extension
+            block.scaling_factor = self.scaling_factor
+            block.first_layer.extended_output_layer = self.first_layer_extension
+            block.second_layer.extended_input_layer = self.second_layer_extension
+            output = block.extended_forward(x)
+            expected_output = torch.nn.Sequential(
+                block.pre_activation,
+                self.first_layer_extension,
+                ScalingModule(self.scaling_factor),
+                block.first_layer.extended_post_layer_function,
+                self.second_layer_extension,
+                ScalingModule(self.scaling_factor),
+            )(x) + self.downsample(x)
+
+            self.assertAllClose(output, expected_output)
+
+    def test_extended_forward_positive_features_no_downsample(self):
+        """Test extended_forward with positive hidden features and no downsample."""
+        block = LinearGrowingBlock(
+            in_features=self.in_features,
+            out_features=self.in_features,
+            hidden_features=self.hidden_features,
+            device=self.device,
+        )
+
+        x = torch.randn(self.batch_size, self.in_features, device=self.device)
+
+        with self.subTest("No extension"):
+            # With positive features and no extension, should use normal forward through layers
+            output = block.extended_forward(x)
+            # Use the already tested forward method
+            expected_output = block(x)
+
+            self.assertAllClose(output, expected_output)
+
+        with self.subTest("With extension"):
+            # With positive features and extension, should use extended_forward method
+            block.scaling_factor = self.scaling_factor
+            # Set up extensions for both layers
+            block.first_layer.extended_output_layer = self.first_layer_extension
+            block.second_layer.extended_input_layer = (
+                self.second_layer_extension_no_downsample
+            )
+
+            # The extended forward for positive features should call the layers' extended_forward methods
+            output = block.extended_forward(x)
+
+            # For positive features, the block should call first_layer.extended_forward and second_layer.extended_forward
+            # This is complex to replicate exactly, so we'll just verify the shape and that it runs without error
+            self.assertShapeEqual(output, (self.batch_size, self.in_features))
+
+            # Now test exact computation by manually calling the layers' extended_forward methods
+            identity = x  # identity downsample
+            pre_activated = block.pre_activation(x)
+            first_out, first_ext = block.first_layer.extended_forward(pre_activated)
+            second_out, second_ext = block.second_layer.extended_forward(
+                first_out, first_ext
+            )
+            expected_output = second_out + identity
+
+            self.assertAllClose(output, expected_output)
+            self.assertIsNone(second_ext)
+
+    def test_extended_forward_positive_features_with_downsample(self):
+        """Test extended_forward with positive hidden features and downsample."""
+        block = LinearGrowingBlock(
+            in_features=self.in_features,
+            out_features=self.out_features,
+            hidden_features=self.hidden_features,
+            downsample=self.downsample,
+            device=self.device,
+        )
+
+        x = torch.randn(self.batch_size, self.in_features, device=self.device)
+
+        with self.subTest("No extension"):
+            # With positive features and no extension, should use normal forward through layers
+            output = block.extended_forward(x)
+            # Use the already tested forward method
+            expected_output = block(x)
+
+            self.assertAllClose(output, expected_output)
+
+        with self.subTest("With extension"):
+            # With positive features and extension, should use extended_forward method
+            block.scaling_factor = self.scaling_factor
+            # Set up extensions for both layers
+            block.first_layer.extended_output_layer = self.first_layer_extension
+            block.second_layer.extended_input_layer = self.second_layer_extension
+
+            # The extended forward for positive features should call the layers' extended_forward methods
+            output = block.extended_forward(x)
+
+            # For positive features, the block should call first_layer.extended_forward and second_layer.extended_forward
+            # This is complex to replicate exactly, so we'll just verify the shape and that it runs without error
+            self.assertShapeEqual(output, (self.batch_size, self.out_features))
+
+            # Now test exact computation by manually calling the layers' extended_forward methods
+            identity = self.downsample(x)
+            pre_activated = block.pre_activation(x)
+            first_out, first_ext = block.first_layer.extended_forward(pre_activated)
+            second_out, second_ext = block.second_layer.extended_forward(
+                first_out, first_ext
+            )
+            expected_output = second_out + identity
+
+            self.assertAllClose(output, expected_output)
+            self.assertIsNone(second_ext)
+
+    def test_pre_activity_storage_zero_features_no_downsample(self):
+        """Test pre-activity storage with 0 hidden features and no downsample."""
+        block = LinearGrowingBlock(
+            in_features=self.in_features,
+            out_features=self.out_features,
+            hidden_features=0,
+            device=self.device,
+        )
+
+        # Enable pre-activity storage directly
+        block.second_layer.store_pre_activity = True
+
+        x = torch.randn(self.batch_size, self.in_features, device=self.device)
+
+        # Forward pass
+        output = block(x)
+
+        # For zero features, the block stores identity (downsample(x)) as pre_activity
+        # Since downsample is Identity, it should be x
+        expected_stored_pre_activity = x
+
+        # Check that pre-activity is stored correctly
+        self.assertAllClose(block.second_layer.pre_activity, expected_stored_pre_activity)
+
+        # Backward pass to compute gradients
+        loss = torch.norm(output)
+        loss.backward()
+
+        # Check that pre-activity gradient can be accessed
+        pre_activity_grad = block.second_layer.pre_activity.grad
+        self.assertIsNotNone(pre_activity_grad)
+        assert pre_activity_grad is not None  # to avoid type warning
+        self.assertShapeEqual(pre_activity_grad, block.second_layer.pre_activity.shape)
+
+    def test_pre_activity_storage_zero_features_with_downsample(self):
+        """Test pre-activity storage with 0 hidden features and downsample."""
+        block = LinearGrowingBlock(
+            in_features=self.in_features,
+            out_features=self.out_features,
+            hidden_features=0,
+            downsample=self.downsample,
+            device=self.device,
+        )
+
+        # Enable pre-activity storage directly
+        block.second_layer.store_pre_activity = True
+
+        x = torch.randn(self.batch_size, self.in_features, device=self.device)
+
+        # Forward pass
+        output = block(x)
+
+        # For zero features with downsample, pre_activity should be downsample(x)
+        expected_stored_pre_activity = self.downsample(x)
+
+        # Check that pre-activity is stored correctly
+        self.assertAllClose(block.second_layer.pre_activity, expected_stored_pre_activity)
+
+        # Backward pass to compute gradients
+        loss = torch.norm(output)
+        loss.backward()
+
+        # Check that pre-activity gradient can be accessed
+        pre_activity_grad = block.second_layer.pre_activity.grad
+        self.assertIsNotNone(pre_activity_grad)
+        assert pre_activity_grad is not None  # to avoid type warning
+        self.assertShapeEqual(pre_activity_grad, block.second_layer.pre_activity.shape)
+
+    def test_pre_activity_storage_positive_features_no_downsample(self):
+        """Test pre-activity storage with >0 hidden features and no downsample."""
+        block = LinearGrowingBlock(
+            in_features=self.in_features,
+            out_features=self.in_features,
+            hidden_features=self.hidden_features,
+            device=self.device,
+        )
+
+        # Enable pre-activity storage directly
+        block.second_layer.store_pre_activity = True
+
+        x = torch.randn(self.batch_size, self.in_features, device=self.device)
+
+        # Forward pass
+        output = block(x)
+
+        # For positive features, pre_activity should be the output of first_layer
+        pre_activated = block.pre_activation(x)
+        expected_stored_pre_activity = block.second_layer.layer(
+            block.first_layer(pre_activated)
+        )
+
+        # Check that pre-activity is stored correctly
+        self.assertAllClose(block.second_layer.pre_activity, expected_stored_pre_activity)
+
+        # Check that pre-activity has been processed correctly
+        self.assertIsNotNone(block.second_layer.pre_activity)
+
+        # Backward pass to compute gradients
+        loss = torch.norm(output)
+        loss.backward()
+
+        # Check that pre-activity gradient can be accessed
+        pre_activity_grad = block.second_layer.pre_activity.grad
+        self.assertIsNotNone(pre_activity_grad)
+        assert pre_activity_grad is not None  # to avoid type warning
+        self.assertShapeEqual(pre_activity_grad, block.second_layer.pre_activity.shape)
+
+        # Verify gradient shape matches the output of first_layer
+        expected_shape = (self.batch_size, self.in_features)
+        self.assertShapeEqual(pre_activity_grad, expected_shape)
+
+    def test_pre_activity_storage_positive_features_with_downsample(self):
+        """Test pre-activity storage with >0 hidden features and downsample."""
+        block = LinearGrowingBlock(
+            in_features=self.in_features,
+            out_features=self.out_features,
+            hidden_features=self.hidden_features,
+            downsample=self.downsample,
+            device=self.device,
+        )
+
+        # Enable pre-activity storage directly
+        block.second_layer.store_pre_activity = True
+
+        x = torch.randn(self.batch_size, self.in_features, device=self.device)
+
+        # Forward pass
+        output = block(x)
+
+        # For positive features with downsample, pre_activity should be output of first_layer
+        pre_activated = block.pre_activation(x)
+        expected_stored_pre_activity = block.second_layer.layer(
+            block.first_layer(pre_activated)
+        )
+
+        # Check that pre-activity is stored correctly
+        self.assertAllClose(block.second_layer.pre_activity, expected_stored_pre_activity)
+
+        # Backward pass to compute gradients
+        loss = torch.norm(output)
+        loss.backward()
+
+        # Check that pre-activity gradient can be accessed
+        pre_activity_grad = block.second_layer.pre_activity.grad
+        self.assertIsNotNone(pre_activity_grad)
+        assert pre_activity_grad is not None  # to avoid type warning
+        self.assertShapeEqual(pre_activity_grad, block.second_layer.pre_activity.shape)
+
+        # Verify gradient shape matches the output of first_layer
+        expected_shape = (self.batch_size, self.out_features)
+        self.assertShapeEqual(pre_activity_grad, expected_shape)
+        # Check that pre-activity gradient can be accessed
+        pre_activity_grad = block.second_layer.pre_activity.grad
+        self.assertIsNotNone(pre_activity_grad)
+        assert pre_activity_grad is not None  # to avoid type warning
+        self.assertShapeEqual(pre_activity_grad, block.second_layer.pre_activity.shape)
+
+        # Verify gradient shape matches the output of first_layer
+        expected_shape = (self.batch_size, self.out_features)
+        self.assertShapeEqual(pre_activity_grad, expected_shape)
+
     def test_scaling_factor_property(self):
         """Test scaling factor property getter and setter."""
         block = LinearGrowingBlock(
@@ -325,12 +723,13 @@ class TestLinearGrowingBlock(TorchTestCase):
         self.assertEqual(block.scaling_factor, new_scaling_factor)
         self.assertEqual(block.second_layer.scaling_factor, new_scaling_factor)
 
-    def test_init_computation(self):
+    @unittest_parametrize(({"hidden_features": 0}, {"hidden_features": 3}))
+    def test_init_computation(self, hidden_features: int = 0):
         """Test initialization of computation."""
         block = LinearGrowingBlock(
             in_features=self.in_features,
             out_features=self.out_features,
-            hidden_features=self.hidden_features,
+            hidden_features=hidden_features,
             device=self.device,
         )
 
@@ -346,7 +745,7 @@ class TestLinearGrowingBlock(TorchTestCase):
         self.assertIsNotNone(block.second_layer.tensor_s_growth)
 
         # For hidden_features > 0, additional statistics should be initialized
-        if block.hidden_features > 0:
+        if hidden_features > 0:
             self.assertTrue(block.second_layer.store_input)
             self.assertIsNotNone(block.second_layer.cross_covariance)
             self.assertIsNotNone(block.second_layer.tensor_s)
@@ -370,23 +769,6 @@ class TestLinearGrowingBlock(TorchTestCase):
         self.assertTrue(block.first_layer.use_bias)
         # Second layer should use kwargs_layer
         self.assertFalse(block.second_layer.use_bias)
-
-    def test_extended_forward_zero_features(self):
-        """Test extended_forward with zero hidden features."""
-        block = LinearGrowingBlock(
-            in_features=self.in_features,
-            out_features=self.out_features,
-            hidden_features=0,
-            device=self.device,
-        )
-
-        x = torch.randn(self.batch_size, self.in_features, device=self.device)
-
-        # With zero features and no extended_output_layer, should return identity
-        output = block.extended_forward(x)
-        expected_output = block.downsample(x)
-
-        self.assertAllClose(output, expected_output)
 
     def test_reset_computation(self):
         """Test reset of computation."""
@@ -417,7 +799,6 @@ class TestLinearGrowingBlock(TorchTestCase):
         )
 
         x = torch.randn(self.batch_size, self.in_features, device=self.device)
-        x.requires_grad_(True)
 
         output = block(x)
         loss = torch.norm(output)
@@ -426,161 +807,281 @@ class TestLinearGrowingBlock(TorchTestCase):
         loss.backward()
 
         # Check that gradients were computed
-        self.assertIsNotNone(x.grad)
-        for param in block.parameters():
-            self.assertIsNotNone(param.grad)
-        self.assertIsNotNone(x.grad)
         for param in block.parameters():
             self.assertIsNotNone(param.grad)
 
-    def test_pre_activity_storage_zero_features_no_downsample(self):
-        """Test pre-activity storage with 0 hidden features and no downsample."""
+    def test_full_addition_loop_with_indicator_batch(self):
+        """Test complete addition loop starting with 0 features using indicator batch data."""
+
+        # Step 1: Create the block with no downsampling, no activation
         block = LinearGrowingBlock(
             in_features=self.in_features,
-            out_features=self.out_features,
-            hidden_features=0,
+            out_features=self.in_features,  # Same dimensions for identity mapping
+            hidden_features=0,  # Start with 0 features
+            activation=torch.nn.Identity(),
             device=self.device,
+            name="test_block",
         )
 
-        # Enable pre-activity storage directly
-        block.second_layer.store_pre_activity = True
+        # Step 2: Init the computation
+        block.init_computation()
 
-        x = torch.randn(self.batch_size, self.in_features, device=self.device)
-        x.requires_grad_(True)
+        # Step 3: Forward/backward with loss ||.||^2 / 2 using indicator batch
+        x_batch = indicator_batch((self.in_features,), device=self.device)
 
-        # Forward pass
-        output = block(x)
+        block.zero_grad()
+        output = block(x_batch)
 
-        # For zero features, the block stores identity (downsample(x)) as pre_activity
-        # Since downsample is Identity, it should be x
-        expected_stored_pre_activity = x
-
-        # Check that pre-activity is stored correctly
-        self.assertAllClose(block.second_layer.pre_activity, expected_stored_pre_activity)
-
-        # Backward pass to compute gradients
-        loss = torch.norm(output)
+        # Loss: ||output||^2 / 2
+        # loss = 0.5 * torch.nn.functional.mse_loss(output, torch.zeros_like(output))
+        loss = (output**2).sum() / 2
         loss.backward()
 
-        # Check that pre-activity gradient can be accessed
-        pre_activity_grad = block.second_layer.pre_activity.grad
-        self.assertIsNotNone(pre_activity_grad)
-        self.assertShapeEqual(pre_activity_grad, block.second_layer.pre_activity.shape)
+        # Verify gradients exist
+        self.assertIsNotNone(block.second_layer.pre_activity.grad)
 
-    def test_pre_activity_storage_zero_features_with_downsample(self):
-        """Test pre-activity storage with 0 hidden features and downsample."""
+        # Update computation
+        block.update_computation()
+
+        # Step 4: Compute updates (with max neurons = input features)
+        block.compute_optimal_updates(maximum_added_neurons=self.in_features)
+
+        # Verify updates were computed
+        self.assertIsNotNone(block.first_layer.extended_output_layer)
+        self.assertIsNotNone(block.second_layer.extended_input_layer)
+        self.assertIsNotNone(block.eigenvalues)
+        assert isinstance(block.first_layer.extended_output_layer, torch.nn.Linear)
+        assert isinstance(block.second_layer.extended_input_layer, torch.nn.Linear)
+        assert isinstance(block.eigenvalues, torch.Tensor)
+
+        # Step 5: Reset computation
+        block.reset_computation()
+
+        # Verify reset
+        self.assertFalse(block.first_layer.store_input)
+        self.assertFalse(block.second_layer.store_pre_activity)
+
+        # Step 6: Set scaling factor to 1
+        block.scaling_factor = 1
+
+        # Step 7: Check that the identity mapping was correctly learned
+        # The extended forward should approximate identity mapping
+        with torch.no_grad():
+            extended_output = block.extended_forward(x_batch)
+            # For identity mapping, output should be close to input
+            # Since we started with 0 features, the extension should learn the identity
+            self.assertShapeEqual(extended_output, x_batch.shape)
+            self.assertAllClose(extended_output, torch.zeros_like(x_batch), atol=1e-5)
+
+        # Step 8: Check that `first_order_improvement` returns a value
+        original_improvement = block.first_order_improvement
+        self.assertIsInstance(original_improvement, torch.Tensor)
+        self.assertTrue(
+            original_improvement.item() >= 0
+        )  # Should be positive improvement
+
+        # Step 9: Sub select new neurons
+        num_neurons_to_keep = min(1, block.eigenvalues.shape[0])
+
+        block.sub_select_optimal_added_parameters(num_neurons_to_keep)
+
+        # Verify sub-selection
+        self.assertEqual(block.eigenvalues.shape[0], num_neurons_to_keep)
+        self.assertEqual(
+            block.first_layer.extended_output_layer.out_features,
+            num_neurons_to_keep,
+        )
+        self.assertEqual(
+            block.second_layer.extended_input_layer.in_features, num_neurons_to_keep
+        )
+
+        # Step 10: Check that `first_order_improvement` returns lower or equal value
+        reduced_improvement = block.first_order_improvement
+        self.assertIsInstance(reduced_improvement, torch.Tensor)
+        self.assertLessEqual(
+            reduced_improvement.item(),
+            original_improvement.item(),
+            "Reduced improvement should be <= original improvement",
+        )
+
+        # Step 11: Apply change
+        # Store original weights for comparison
+        expected_first_weight = (
+            block.first_layer.extended_output_layer.weight.data.clone()
+        )
+        expected_second_weight = (
+            block.second_layer.extended_input_layer.weight.data.clone()
+        )
+
+        original_first_out_features = block.first_layer.out_features
+        original_second_in_features = block.second_layer.in_features
+
+        block.apply_change()
+
+        # Step 12: Check that the change was correctly done
+        self.assertEqual(
+            block.first_layer.out_features,
+            original_first_out_features + num_neurons_to_keep,
+        )
+        self.assertEqual(
+            block.second_layer.in_features,
+            original_second_in_features + num_neurons_to_keep,
+        )
+        self.assertEqual(block.hidden_features, num_neurons_to_keep)  # Was 0 before
+
+        # Verify weights were extended properly
+        self.assertShapeEqual(
+            block.first_layer.weight,
+            (original_first_out_features + num_neurons_to_keep, self.in_features),
+        )
+        # Easy to check for equality as there was no neurons before
+        self.assertAllClose(
+            block.first_layer.weight,
+            expected_first_weight,
+        )
+        self.assertShapeEqual(
+            block.second_layer.weight,
+            (self.in_features, original_second_in_features + num_neurons_to_keep),
+        )
+        # Easy to check for equality as there was no neurons before
+        self.assertAllClose(
+            block.second_layer.weight,
+            expected_second_weight,
+        )
+
+        # Test that the extended layer behaves as expected
+        with torch.no_grad():
+            block(x_batch)
+
+        # Step 13: Delete update
+        block.delete_update()
+
+        # Step 14: Check that the update was deleted
+        deleted_objects = [
+            block.second_layer.optimal_delta_layer,
+            block.second_layer.extended_input_layer,
+            block.second_layer.extended_output_layer,
+            block.first_layer.optimal_delta_layer,
+            block.first_layer.extended_output_layer,
+            block.first_layer.extended_input_layer,
+            block.eigenvalues,
+        ]
+        for obj in deleted_objects:
+            self.assertIsNone(obj)
+
+    def test_full_addition_loop_with_features_identity_initialization(
+        self, bias: bool = False
+    ):
+        """Test complete addition loop starting with features and identity initialization."""
+
+        # Step 1: Create the block with features, no downsampling, no activation
         block = LinearGrowingBlock(
             in_features=self.in_features,
-            out_features=self.out_features,
-            hidden_features=0,
-            downsample=self.downsample,
+            out_features=self.in_features,  # Same dimensions for identity mapping
+            hidden_features=self.in_features,  # Start with features
+            activation=torch.nn.Identity(),
             device=self.device,
+            name="test_block_with_features",
+            kwargs_layer={"use_bias": bias},
         )
 
-        # Enable pre-activity storage directly
-        block.second_layer.store_pre_activity = True
+        # Step 2: Initialize first layer with identity and second layer with zeros
+        with torch.no_grad():
+            # First layer: identity transformation
+            block.first_layer.weight.data = torch.eye(
+                self.in_features, self.in_features, device=self.device
+            )
+            if block.first_layer.use_bias:
+                block.first_layer.bias.data.zero_()
 
-        x = torch.randn(self.batch_size, self.in_features, device=self.device)
-        x.requires_grad_(True)
+            # Second layer: zero transformation (to make the whole block identity when added to residual)
+            block.second_layer.weight.data.zero_()
+            if block.second_layer.use_bias:
+                block.second_layer.bias.data.zero_()
 
-        # Forward pass
-        output = block(x)
+        # Verify the block performs identity mapping
+        x_test = torch.randn(self.batch_size, self.in_features, device=self.device)
+        with torch.no_grad():
+            output_test = block(x_test)
+            self.assertAllClose(output_test, x_test, atol=1e-6)
 
-        # For zero features with downsample, pre_activity should be downsample(x)
-        expected_stored_pre_activity = self.downsample(x)
+        # Step 3: Init the computation
+        block.init_computation()
 
-        # Check that pre-activity is stored correctly
-        self.assertAllClose(block.second_layer.pre_activity, expected_stored_pre_activity)
+        # Verify initialization
+        self.assertTrue(block.first_layer.store_input)
+        self.assertTrue(block.second_layer.store_pre_activity)
+        self.assertTrue(
+            block.second_layer.store_input
+        )  # Should be True for positive features
 
-        # Backward pass to compute gradients
-        loss = torch.norm(output)
+        # Step 4: Forward/backward with loss ||output||^2 / 2 using indicator batch
+        x_batch = indicator_batch((self.in_features,), device=self.device)
+
+        block.zero_grad()
+        output = block(x_batch)
+
+        # Loss: ||output||^2 / 2
+        loss = (output**2).sum() / 2
         loss.backward()
 
-        # Check that pre-activity gradient can be accessed
-        pre_activity_grad = block.second_layer.pre_activity.grad
-        self.assertIsNotNone(pre_activity_grad)
-        self.assertShapeEqual(pre_activity_grad, block.second_layer.pre_activity.shape)
+        # Verify gradients exist
+        self.assertIsNotNone(block.second_layer.pre_activity.grad)
 
-    def test_pre_activity_storage_positive_features_no_downsample(self):
-        """Test pre-activity storage with >0 hidden features and no downsample."""
-        block = LinearGrowingBlock(
-            in_features=self.in_features,
-            out_features=self.in_features,
-            hidden_features=self.hidden_features,
-            device=self.device,
+        block.update_computation()
+
+        block.compute_optimal_updates(maximum_added_neurons=self.in_features)
+
+        block.reset_computation()
+
+        # Step 6: Check that the optimal delta layer is exactly the identity (negative)
+        self.assertIsNotNone(block.second_layer.optimal_delta_layer)
+        assert isinstance(block.second_layer.optimal_delta_layer, torch.nn.Linear)
+
+        if not bias:
+            expected_delta_weight = torch.eye(
+                self.in_features, self.in_features, device=self.device
+            )
+            self.assertAllClose(
+                block.second_layer.optimal_delta_layer.weight,
+                expected_delta_weight,
+                atol=1e-5,
+                msg="Optimal delta weight should be approximately zero for already optimal layer",
+            )
+
+        # Step 7: Check that no new neurons are proposed
+        # Since the block is already optimal (identity), eigenvalues should be very small or zero
+        self.assertIsNotNone(block.eigenvalues)
+        assert isinstance(block.eigenvalues, torch.Tensor)
+
+        # All eigenvalues should be very small (ideally zero) since no improvement is possible
+        self.assertTrue(
+            torch.all(torch.abs(block.eigenvalues) < 1e-3),
+            f"Eigenvalues should be very small for optimal block, got {block.eigenvalues}",
         )
 
-        # Enable pre-activity storage directly
-        block.second_layer.store_pre_activity = True
+        # Step 9: Set scaling factor to 1
+        block.scaling_factor = 1.0
 
-        x = torch.randn(self.batch_size, self.in_features, device=self.device)
-        x.requires_grad_(True)
-
-        # Forward pass
-        output = block(x)
-
-        # For positive features, pre_activity should be the output of first_layer
-        pre_activated = block.pre_activation(x)
-        expected_stored_pre_activity = block.second_layer.layer(
-            block.first_layer(pre_activated)
+        # Step 10: Check that first_order_improvement is correct
+        improvement = block.first_order_improvement
+        self.assertIsInstance(improvement, torch.Tensor)
+        self.assertAlmostEqual(
+            improvement.item(), 1, msg=f"First order improvement should be 1"
         )
 
-        # Check that pre-activity is stored correctly
-        self.assertAllClose(block.second_layer.pre_activity, expected_stored_pre_activity)
+        # Step 13: Delete update
+        block.delete_update()
 
-        # Check that pre-activity has been processed correctly
-        self.assertIsNotNone(block.second_layer.pre_activity)
-
-        # Backward pass to compute gradients
-        loss = torch.norm(output)
-        loss.backward()
-
-        # Check that pre-activity gradient can be accessed
-        pre_activity_grad = block.second_layer.pre_activity.grad
-        self.assertIsNotNone(pre_activity_grad)
-        self.assertShapeEqual(pre_activity_grad, block.second_layer.pre_activity.shape)
-
-        # Verify gradient shape matches the output of first_layer
-        expected_shape = (self.batch_size, self.in_features)
-        self.assertShapeEqual(pre_activity_grad, expected_shape)
-
-    def test_pre_activity_storage_positive_features_with_downsample(self):
-        """Test pre-activity storage with >0 hidden features and downsample."""
-        block = LinearGrowingBlock(
-            in_features=self.in_features,
-            out_features=self.out_features,
-            hidden_features=self.hidden_features,
-            downsample=self.downsample,
-            device=self.device,
-        )
-
-        # Enable pre-activity storage directly
-        block.second_layer.store_pre_activity = True
-
-        x = torch.randn(self.batch_size, self.in_features, device=self.device)
-        x.requires_grad_(True)
-
-        # Forward pass
-        output = block(x)
-
-        # For positive features with downsample, pre_activity should be output of first_layer
-        pre_activated = block.pre_activation(x)
-        expected_stored_pre_activity = block.second_layer.layer(
-            block.first_layer(pre_activated)
-        )
-
-        # Check that pre-activity is stored correctly
-        self.assertAllClose(block.second_layer.pre_activity, expected_stored_pre_activity)
-
-        # Backward pass to compute gradients
-        loss = torch.norm(output)
-        loss.backward()
-
-        # Check that pre-activity gradient can be accessed
-        pre_activity_grad = block.second_layer.pre_activity.grad
-        self.assertIsNotNone(pre_activity_grad)
-        self.assertShapeEqual(pre_activity_grad, block.second_layer.pre_activity.shape)
-
-        # Verify gradient shape matches the output of first_layer
-        expected_shape = (self.batch_size, self.out_features)
-        self.assertShapeEqual(pre_activity_grad, expected_shape)
+        # Step 14: Check that the update was deleted
+        deleted_objects = [
+            block.second_layer.optimal_delta_layer,
+            block.second_layer.extended_input_layer,
+            block.second_layer.extended_output_layer,
+            block.first_layer.optimal_delta_layer,
+            block.first_layer.extended_output_layer,
+            block.first_layer.extended_input_layer,
+            block.eigenvalues,
+        ]
+        for obj in deleted_objects:
+            self.assertIsNone(obj)
