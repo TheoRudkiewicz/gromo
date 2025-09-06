@@ -532,18 +532,24 @@ class GrowingModule(torch.nn.Module):
         self.layer: torch.nn.Module = layer.to(self.device)
         self.post_layer_function: torch.nn.Module = post_layer_function.to(self.device)
         if extended_post_layer_function is None:
-            self.extended_post_layer_function = post_layer_function
+            self.extended_post_layer_function = self.post_layer_function
         else:
             self.extended_post_layer_function = extended_post_layer_function.to(
                 self.device
             )
-        if isinstance(extended_post_layer_function, torch.nn.Sequential):
-            for module in extended_post_layer_function:
+        if isinstance(self.extended_post_layer_function, torch.nn.Sequential):
+            for module in self.extended_post_layer_function:
                 if hasattr(module, "num_features"):
                     warnings.warn(
                         f"Warning in {self.name}: The extended post layer "
                         f"function may get a variable input size."
                     )
+        elif hasattr(self.extended_post_layer_function, "num_features"):
+            warnings.warn(
+                f"Warning in {self.name}: The extended post layer "
+                f"function may get a variable input size."
+            )
+
         self._allow_growing = allow_growing
         assert not self._allow_growing or isinstance(
             previous_module, (GrowingModule, MergeGrowingModule)
@@ -1200,6 +1206,8 @@ class GrowingModule(torch.nn.Module):
             for module in self.post_layer_function:
                 if hasattr(module, "grow"):
                     module.grow(extension_size)
+        elif hasattr(self.post_layer_function, "grow"):
+            self.post_layer_function.grow(extension_size)
 
     def apply_change(
         self,
@@ -1207,6 +1215,7 @@ class GrowingModule(torch.nn.Module):
         apply_previous: bool = True,
         apply_delta: bool = True,
         apply_extension: bool = True,
+        extension_size: int | None = None,
     ) -> None:
         """
         Apply the optimal delta and extend the layer with current
@@ -1227,6 +1236,9 @@ class GrowingModule(torch.nn.Module):
             if True apply the optimal delta to the layer, by default True
         apply_extension: bool
             if True apply the extension to the layer, by default True
+        extension_size: int | None
+            size of the extension to apply, by default None and get automatically
+            determined using `self.eigenvalues_extension.shape[0]`
         """
         # print(f"==================== Applying change to {self.name} ====================")
         if scaling_factor is not None:
@@ -1258,10 +1270,18 @@ class GrowingModule(torch.nn.Module):
                 )
 
             if apply_previous and self.previous_module is not None:
+                if extension_size is None:
+                    assert self.eigenvalues_extension is not None, (
+                        "We need to determine the size of the extension but"
+                        "it was not given as parameter nor could be automatically"
+                        "determined as self.eigenvalues_extension is None"
+                        f"(Error occurred in {self.name})"
+                    )
+                    extension_size = self.eigenvalues_extension.shape[0]
                 if isinstance(self.previous_module, GrowingModule):
                     self.previous_module._apply_output_changes(
                         scaling_factor=self.scaling_factor,
-                        extension_size=self.eigenvalues_extension.shape[0],
+                        extension_size=extension_size,
                     )
                 elif isinstance(self.previous_module, MergeGrowingModule):
                     raise NotImplementedError  # TODO
@@ -1357,7 +1377,7 @@ class GrowingModule(torch.nn.Module):
         if use_projected_gradient:
             matrix_n = self.tensor_n
         else:
-            matrix_n = self.tensor_m_prev()
+            matrix_n = -self.tensor_m_prev()
         # It seems that sometimes the tensor N is not accessible.
         # I have no idea why this occurs sometimes.
 
