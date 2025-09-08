@@ -4,6 +4,9 @@ Will allow to extend the basic blocks with more intermediate channels
 and to add basic blocks add the end of the stages.
 """
 
+from functools import partial
+from typing import Callable
+
 import torch
 from torch import nn
 
@@ -89,7 +92,7 @@ class ResNetBasicBlock(GrowingContainer):
                 nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
             )
 
-        self.stages = nn.ModuleList()
+        self.stages: nn.ModuleList = nn.ModuleList()
         nb_stages = 4
         for i in range(nb_stages):
             # for the future we could remove the basic block of the first stage
@@ -164,7 +167,8 @@ class ResNetBasicBlock(GrowingContainer):
 
         # Initialize the growing layers list with all RestrictedConv2dGrowingBlock instances
         self._growing_layers = []
-        for stage in self.stages:
+        for stage in self.stages:  # type: ignore
+            stage: nn.Sequential
             for block in stage:
                 self._growing_layers.append(block)
 
@@ -173,6 +177,7 @@ class ResNetBasicBlock(GrowingContainer):
         stage_index: int = 0,
         input_block_kernel_size: int = 3,
         output_block_kernel_size: int = 3,
+        hidden_channels: int = 0,
     ) -> None:
         """
         Append a new block to the specified stage of the ResNet.
@@ -181,10 +186,9 @@ class ResNetBasicBlock(GrowingContainer):
             raise IndexError(
                 f"Stage {stage_index} is out of range. There are {len(self.stages)} stages."
             )
-        stage = self.stages[stage_index]
+        stage: nn.Sequential = self.stages[stage_index]  # type: ignore
         input_channels = stage[-1].out_features
         output_channels = input_channels
-        hidden_channels = 0
         new_block = RestrictedConv2dGrowingBlock(
             in_channels=input_channels,
             out_channels=output_channels,
@@ -225,7 +229,8 @@ class ResNetBasicBlock(GrowingContainer):
 
     def extended_forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.pre_net(x)
-        for stage in self.stages:
+        for stage in self.stages:  # type: ignore
+            stage: nn.Sequential
             for block in stage:
                 if hasattr(block, "extended_forward"):
                     x = block.extended_forward(x)
@@ -233,6 +238,100 @@ class ResNetBasicBlock(GrowingContainer):
                     x = block(x)
         x = self.post_net(x)
         return x
+
+
+def init_full_resnet_structure(
+    input_shape: tuple[int, int, int] = (3, 224, 224),
+    in_features: int | None = None,
+    out_features: int = 1000,
+    device: torch.device | str | None = None,
+    activation: nn.Module = nn.ReLU(),
+    input_block_kernel_size: int = 3,
+    output_block_kernel_size: int = 3,
+    reduction_factor: float = 1 / 64,
+    small_inputs: bool | None = None,
+    number_of_blocks_per_stage: int | tuple[int, int, int, int] = 2,
+) -> ResNetBasicBlock:
+    """
+    Initialize a ResNet-18 model with basic blocks.
+
+    Parameters
+    ----------
+    input_shape : tuple[int, int, int]
+        Shape of the input tensor (C, H, W).
+        Used to infer initial in_features and
+        to adjust the architecture for small inputs if needed.
+    in_features : int | None
+        Number of input features (channels).
+    out_features : int
+        Number of output features (channels).
+    device : torch.device | str | None
+        Device to run the model on.
+    activation : nn.Module
+        Activation function to use.
+    input_block_kernel_size : int
+        Kernel size for the input block.
+    output_block_kernel_size : int
+        Kernel size for the output block.
+    reduction_factor : float
+        Factor to reduce the number of channels in the bottleneck.
+        If 0, starts with no channels. If 1, starts with all channels.
+    small_inputs : bool | None
+        If True, adapt the network for small input images (e.g., CIFAR-10/100).
+        This uses smaller kernels, no stride, and no max pooling in the initial layers.
+    number_of_blocks_per_stage : int | tuple[int, int, int, int]
+        Number of basic blocks per stage. If an integer is provided, the same number
+        of blocks will be used for all four stages. If a tuple is provided, it should
+        contain four integers specifying the number of blocks for each stage.
+
+    Returns
+    -------
+    ResNetBasicBlock
+        The initialized ResNet-18 model.
+    """
+    if in_features is None:
+        in_features = input_shape[0]
+    if small_inputs is None:
+        small_inputs = input_shape[1] <= 32 and input_shape[2] <= 32
+
+    model = ResNetBasicBlock(
+        in_features=in_features,
+        out_features=out_features,
+        device=device,
+        activation=activation,
+        input_block_kernel_size=input_block_kernel_size,
+        output_block_kernel_size=output_block_kernel_size,
+        reduction_factor=reduction_factor,
+        small_inputs=small_inputs,
+    )
+    if isinstance(number_of_blocks_per_stage, int):
+        blocks_per_stage = (number_of_blocks_per_stage,) * 4
+    elif (
+        isinstance(number_of_blocks_per_stage, (list, tuple))
+        and len(number_of_blocks_per_stage) != 4
+    ):
+        raise ValueError("If a tuple is provided, it must contain exactly four integers.")
+    else:
+        raise ValueError(
+            "number_of_blocks_per_stage must be an int or a tuple of four ints."
+        )
+    # Append additional blocks to match ResNet-18 architecture
+    for stage_index in range(4):
+        for _ in range(1, blocks_per_stage[stage_index]):
+            model.append_block(
+                stage_index=stage_index,
+                input_block_kernel_size=input_block_kernel_size,
+                output_block_kernel_size=output_block_kernel_size,
+                hidden_channels=int(model.stages[stage_index][0].hidden_features),  # type: ignore
+            )
+    return model
+
+
+init_minimal_resnet_structure: Callable[..., ResNetBasicBlock] = partial(
+    init_full_resnet_structure, number_of_blocks_per_stage=1
+)
+init_full_resnet18_structure: Callable[..., ResNetBasicBlock] = init_full_resnet_structure
+init_full_resnet34_structure: Callable[..., ResNetBasicBlock] = init_full_resnet_structure
 
 
 if __name__ == "__main__":
