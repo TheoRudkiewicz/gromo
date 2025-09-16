@@ -2,21 +2,14 @@
 Module to define a two layer block similar to a BasicBlock in ResNet.
 """
 
+from warnings import warn
+
 import torch
 
 from gromo.containers.growing_container import GrowingContainer
 from gromo.modules.conv2d_growing_module import RestrictedConv2dGrowingModule
 from gromo.modules.growing_module import GrowingModule
-from gromo.modules.linear_growing_module import (
-    LinearGrowingModule,
-    LinearMergeGrowingModule,
-)
-
-
-all_layer_types = {
-    "linear": {"layer": LinearGrowingModule, "merge": LinearMergeGrowingModule},
-    "conv": {"layer": RestrictedConv2dGrowingModule, "merge": None},
-}
+from gromo.modules.linear_growing_module import LinearGrowingModule
 
 
 class GrowingBlock(GrowingContainer):
@@ -66,9 +59,12 @@ class GrowingBlock(GrowingContainer):
         device: torch.device
             device to use for the block
         """
-        assert (
-            in_features == out_features or downsample is not None
-        ), "Incompatible dimensions: in_features must match out_features or downsample must be provided."
+        assert in_features == out_features or not isinstance(
+            downsample, torch.nn.Identity
+        ), (
+            f"Incompatible dimensions: in_features ({in_features}) must match out_features ({out_features}) "
+            f"or downsample ({downsample}) must be a non-identity module."
+        )
         super(GrowingBlock, self).__init__(
             in_features=in_features,
             out_features=out_features,
@@ -103,7 +99,7 @@ class GrowingBlock(GrowingContainer):
 
     @staticmethod
     def set_default_values(
-        activation: torch.nn.Module | None = torch.nn.Identity(),
+        activation: torch.nn.Module | None = None,
         pre_activation: torch.nn.Module | None = None,
         mid_activation: torch.nn.Module | None = None,
         kwargs_layer: dict | None = None,
@@ -182,20 +178,20 @@ class GrowingBlock(GrowingContainer):
         if self.hidden_features == 0:
             if self.first_layer.store_input:
                 self.first_layer._input = self.pre_activation(x).detach()
+
+            out = torch.zeros_like(identity)
             if self.second_layer.store_pre_activity:
-                self.second_layer._pre_activity = identity
+                self.second_layer._pre_activity = out
                 self.second_layer._pre_activity.requires_grad_(True)
                 self.second_layer._pre_activity.retain_grad()
             self.second_layer.tensor_s_growth.updated = False
             self.second_layer.tensor_m_prev.updated = False
             self.second_layer.cross_covariance.updated = False
-            return identity
         else:
-
             out = self.pre_activation(x)
             out = self.first_layer(out)
             out = self.second_layer(out)
-            return out + identity
+        return out + identity
 
     def init_computation(self):
         """
@@ -270,15 +266,15 @@ class GrowingBlock(GrowingContainer):
         if self.hidden_features > 0:
             _, _, _ = self.second_layer.compute_optimal_delta()
         else:
-            self.second_layer.parameter_update_decrease = 0
-        alpha, alpha_bias, _, _ = self.second_layer.compute_optimal_added_parameters(
+            self.second_layer.parameter_update_decrease = torch.tensor(
+                0.0, device=self.device
+            )
+        self.second_layer.compute_optimal_added_parameters(
             numerical_threshold=numerical_threshold,
             statistical_threshold=statistical_threshold,
             maximum_added_neurons=maximum_added_neurons,
             use_projected_gradient=self.hidden_features > 0,
-        )
-        self.first_layer.extended_output_layer = self.first_layer.layer_of_tensor(
-            alpha, alpha_bias
+            update_previous=True,
         )
 
     def apply_change(self) -> None:
@@ -287,7 +283,6 @@ class GrowingBlock(GrowingContainer):
         optimal delta and layer extension with the current scaling factor.
         """
         assert self.eigenvalues is not None, "No optimal added parameters computed."
-        self.first_layer.apply_change()
         self.second_layer.apply_change()
         self.hidden_features += self.eigenvalues.shape[0]
 
@@ -414,7 +409,7 @@ class RestrictedConv2dGrowingBlock(GrowingBlock):
         self,
         in_channels: int,
         out_channels: int,
-        kernel_size: int | tuple[int, int] | None = 3,
+        kernel_size: int | tuple[int, int] | None = None,
         hidden_channels: int = 0,
         activation: torch.nn.Module | None = None,
         pre_activation: torch.nn.Module | None = None,
@@ -468,20 +463,15 @@ class RestrictedConv2dGrowingBlock(GrowingBlock):
             )
         )
 
-        if (
-            ("kernel_size" not in kwargs_first_layer)
-            or ("kernel_size" not in kwargs_second_layer)
-        ) and (kernel_size is None):
-            raise ValueError(f"kernel_size must be specified for {name}.")
-
         for kwargs in (kwargs_first_layer, kwargs_second_layer):
             if "kernel_size" not in kwargs:
+                if kernel_size is None:
+                    raise ValueError(f"kernel_size must be specified for {name}.")
                 kwargs["kernel_size"] = kernel_size
-            assert kwargs["kernel_size"] == kernel_size, (
-                f"Inconsistent kernel size between kwargs "
-                f"dictionary ({kwargs['kernel_size']}) and "
-                f"argument ({kernel_size}) for {name}."
-            )
+            elif kernel_size is not None:
+                warn(
+                    f"kernel_size specified in both arguments and kwargs for {name}, using value from kwargs."
+                )
 
         first_layer = RestrictedConv2dGrowingModule(
             in_channels=in_channels,

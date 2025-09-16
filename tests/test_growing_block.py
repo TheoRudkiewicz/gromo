@@ -123,7 +123,7 @@ class TestLinearGrowingBlock(TorchTestCase):
         """Test initialization with 0 hidden features."""
         block = LinearGrowingBlock(
             in_features=self.in_features,
-            out_features=self.out_features,
+            out_features=self.in_features,
             hidden_features=0,
             device=self.device,
             name="zero_block",
@@ -131,7 +131,7 @@ class TestLinearGrowingBlock(TorchTestCase):
 
         # Check basic properties
         self.assertEqual(block.in_features, self.in_features)
-        self.assertEqual(block.out_features, self.out_features)
+        self.assertEqual(block.out_features, self.in_features)
         self.assertEqual(block.hidden_features, 0)
         self.assertEqual(block.name, "zero_block")
 
@@ -139,7 +139,7 @@ class TestLinearGrowingBlock(TorchTestCase):
         self.assertEqual(block.first_layer.in_features, self.in_features)
         self.assertEqual(block.first_layer.out_features, 0)  # hidden_features = 0
         self.assertEqual(block.second_layer.in_features, 0)
-        self.assertEqual(block.second_layer.out_features, self.out_features)
+        self.assertEqual(block.second_layer.out_features, self.in_features)
 
         # Check that layers are connected
         self.assertIs(block.second_layer.previous_module, block.first_layer)
@@ -148,7 +148,7 @@ class TestLinearGrowingBlock(TorchTestCase):
         """Test initialization with >0 hidden features."""
         block = LinearGrowingBlock(
             in_features=self.in_features,
-            out_features=self.out_features,
+            out_features=self.in_features,
             hidden_features=self.hidden_features,
             device=self.device,
             name="positive_block",
@@ -156,14 +156,14 @@ class TestLinearGrowingBlock(TorchTestCase):
 
         # Check basic properties
         self.assertEqual(block.in_features, self.in_features)
-        self.assertEqual(block.out_features, self.out_features)
+        self.assertEqual(block.out_features, self.in_features)
         self.assertEqual(block.hidden_features, self.hidden_features)
 
         # Check layer configurations
         self.assertEqual(block.first_layer.in_features, self.in_features)
         self.assertEqual(block.first_layer.out_features, self.hidden_features)
         self.assertEqual(block.second_layer.in_features, self.hidden_features)
-        self.assertEqual(block.second_layer.out_features, self.out_features)
+        self.assertEqual(block.second_layer.out_features, self.in_features)
 
     def test_init_with_custom_activations(self):
         """Test initialization with custom activation functions."""
@@ -173,7 +173,7 @@ class TestLinearGrowingBlock(TorchTestCase):
 
         block = LinearGrowingBlock(
             in_features=self.in_features,
-            out_features=self.out_features,
+            out_features=self.in_features,
             hidden_features=self.hidden_features,
             activation=activation,
             pre_activation=pre_activation,
@@ -189,7 +189,7 @@ class TestLinearGrowingBlock(TorchTestCase):
         """Test forward pass with 0 hidden features and no downsample."""
         block = LinearGrowingBlock(
             in_features=self.in_features,
-            out_features=self.out_features,
+            out_features=self.in_features,
             hidden_features=0,
             device=self.device,
         )
@@ -280,7 +280,7 @@ class TestLinearGrowingBlock(TorchTestCase):
         """Test input and pre-activity storage with 0 hidden features and no downsample."""
         block = LinearGrowingBlock(
             in_features=self.in_features,
-            out_features=self.out_features,
+            out_features=self.in_features,
             hidden_features=0,
             device=self.device,
         )
@@ -379,7 +379,7 @@ class TestLinearGrowingBlock(TorchTestCase):
         """Test extended_forward with zero hidden features."""
         block = LinearGrowingBlock(
             in_features=self.in_features,
-            out_features=self.out_features,
+            out_features=self.in_features,
             hidden_features=0,
             device=self.device,
         )
@@ -547,7 +547,7 @@ class TestLinearGrowingBlock(TorchTestCase):
         """Test pre-activity storage with 0 hidden features and no downsample."""
         block = LinearGrowingBlock(
             in_features=self.in_features,
-            out_features=self.out_features,
+            out_features=self.in_features,
             hidden_features=0,
             device=self.device,
         )
@@ -561,8 +561,8 @@ class TestLinearGrowingBlock(TorchTestCase):
         output = block(x)
 
         # For zero features, the block stores identity (downsample(x)) as pre_activity
-        # Since downsample is Identity, it should be x
-        expected_stored_pre_activity = x
+        # Since downsample is Identity, it should be zeros with same shape as x
+        expected_stored_pre_activity = torch.zeros_like(x)
 
         # Check that pre-activity is stored correctly
         self.assertAllClose(block.second_layer.pre_activity, expected_stored_pre_activity)
@@ -595,8 +595,8 @@ class TestLinearGrowingBlock(TorchTestCase):
         # Forward pass
         output = block(x)
 
-        # For zero features with downsample, pre_activity should be downsample(x)
-        expected_stored_pre_activity = self.downsample(x)
+        # For zero features with downsample, pre_activity should be zeros with same shape as downsample(x)
+        expected_stored_pre_activity = torch.zeros_like(self.downsample(x))
 
         # Check that pre-activity is stored correctly
         self.assertAllClose(block.second_layer.pre_activity, expected_stored_pre_activity)
@@ -694,21 +694,12 @@ class TestLinearGrowingBlock(TorchTestCase):
         # Verify gradient shape matches the output of first_layer
         expected_shape = (self.batch_size, self.out_features)
         self.assertShapeEqual(pre_activity_grad, expected_shape)
-        # Check that pre-activity gradient can be accessed
-        pre_activity_grad = block.second_layer.pre_activity.grad
-        self.assertIsNotNone(pre_activity_grad)
-        assert pre_activity_grad is not None  # to avoid type warning
-        self.assertShapeEqual(pre_activity_grad, block.second_layer.pre_activity.shape)
-
-        # Verify gradient shape matches the output of first_layer
-        expected_shape = (self.batch_size, self.out_features)
-        self.assertShapeEqual(pre_activity_grad, expected_shape)
 
     def test_scaling_factor_property(self):
         """Test scaling factor property getter and setter."""
         block = LinearGrowingBlock(
             in_features=self.in_features,
-            out_features=self.out_features,
+            out_features=self.in_features,
             hidden_features=self.hidden_features,
             device=self.device,
         )
@@ -728,7 +719,7 @@ class TestLinearGrowingBlock(TorchTestCase):
         """Test initialization of computation."""
         block = LinearGrowingBlock(
             in_features=self.in_features,
-            out_features=self.out_features,
+            out_features=self.in_features,
             hidden_features=hidden_features,
             device=self.device,
         )
@@ -758,7 +749,7 @@ class TestLinearGrowingBlock(TorchTestCase):
 
         block = LinearGrowingBlock(
             in_features=self.in_features,
-            out_features=self.out_features,
+            out_features=self.in_features,
             hidden_features=self.hidden_features,
             kwargs_layer=kwargs_layer,
             kwargs_first_layer=kwargs_first_layer,
@@ -774,7 +765,7 @@ class TestLinearGrowingBlock(TorchTestCase):
         """Test reset of computation."""
         block = LinearGrowingBlock(
             in_features=self.in_features,
-            out_features=self.out_features,
+            out_features=self.in_features,
             hidden_features=self.hidden_features,
             device=self.device,
         )
@@ -811,7 +802,11 @@ class TestLinearGrowingBlock(TorchTestCase):
             self.assertIsNotNone(param.grad)
 
     def test_full_addition_loop_with_indicator_batch(self):
-        """Test complete addition loop starting with 0 features using indicator batch data."""
+        """Test complete addition loop starting with 0 features using indicator batch data.
+
+        We start with 0 hidden features and no downsampling, and train the block to learn the zero function.
+        As the residual stream adds the identity, the optimal extension should learn the negative identity.
+        """
 
         # Step 1: Create the block with no downsampling, no activation
         block = LinearGrowingBlock(
@@ -833,7 +828,7 @@ class TestLinearGrowingBlock(TorchTestCase):
         output = block(x_batch)
 
         # Loss: ||output||^2 / 2
-        # loss = 0.5 * torch.nn.functional.mse_loss(output, torch.zeros_like(output))
+        # to ensure that the gradient will be equal to x_batch
         loss = (output**2).sum() / 2
         loss.backward()
 
@@ -864,12 +859,10 @@ class TestLinearGrowingBlock(TorchTestCase):
         # Step 6: Set scaling factor to 1
         block.scaling_factor = 1
 
-        # Step 7: Check that the identity mapping was correctly learned
-        # The extended forward should approximate identity mapping
+        # Step 7: Check that the negative identity mapping was correctly learned
+        # The extended forward should approximate the negative identity mapping
         with torch.no_grad():
             extended_output = block.extended_forward(x_batch)
-            # For identity mapping, output should be close to input
-            # Since we started with 0 features, the extension should learn the identity
             self.assertShapeEqual(extended_output, x_batch.shape)
             self.assertAllClose(extended_output, torch.zeros_like(x_batch), atol=1e-5)
 
@@ -972,7 +965,18 @@ class TestLinearGrowingBlock(TorchTestCase):
     def test_full_addition_loop_with_features_identity_initialization(
         self, bias: bool = False
     ):
-        """Test complete addition loop starting with features and identity initialization."""
+        """
+        Test complete addition loop starting with features and identity initialization.
+
+        We start with the following setup:
+        x -Id-> x -0-> 0 + x
+        and we aim to get zero output.
+        The optimal solution is to change the parameters to:
+        x -Id-> x -(-Id)-> -x + x = 0
+        which leads to a zero bottleneck.
+        We verify that the optimal update is indeed the negative identity and that any new
+        neuron proposed has a very small eigenvalues (no improvement possible).
+        """
 
         # Step 1: Create the block with features, no downsampling, no activation
         block = LinearGrowingBlock(
@@ -1046,7 +1050,7 @@ class TestLinearGrowingBlock(TorchTestCase):
                 block.second_layer.optimal_delta_layer.weight,
                 expected_delta_weight,
                 atol=1e-5,
-                msg="Optimal delta weight should be approximately zero for already optimal layer",
+                msg="Optimal delta weight should be approximately the identity matrix for already optimal layer",
             )
 
         # Step 7: Check that no new neurons are proposed
@@ -1067,7 +1071,7 @@ class TestLinearGrowingBlock(TorchTestCase):
         improvement = block.first_order_improvement
         self.assertIsInstance(improvement, torch.Tensor)
         self.assertAlmostEqual(
-            improvement.item(), 1, msg=f"First order improvement should be 1"
+            improvement.item(), 1, msg="First order improvement should be 1"
         )
 
         # Step 13: Delete update
