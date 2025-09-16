@@ -169,7 +169,8 @@ class ResNetBasicBlock(GrowingContainer):
         self._growing_layers = []
         for stage in self.stages:  # type: ignore
             stage: nn.Sequential
-            for block in stage:
+            for block in stage:  # type: ignore
+                block: RestrictedConv2dGrowingBlock
                 self._growing_layers.append(block)
 
     def append_block(
