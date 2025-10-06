@@ -37,7 +37,8 @@ class GrowingResidualBlock(GrowingContainer):
         Parameters
         ----------
         num_features : int
-            Number of input and output features, in case of convolutional layer, the number of channels.
+            Number of input and output features, in case of convolutional layer,
+            the number of channels.
         hidden_features : int
             Number of hidden features, if zero the block is the zero function.
         activation : Optional[nn.Module]
@@ -213,7 +214,7 @@ class GrowingResidualMLP(GrowingContainer):
         self.set_growing_layers()
 
     def set_growing_layers(self):
-        self._growing_layers = list(block.second_layer for block in self.blocks)
+        self._growing_layers = [block.second_layer for block in self.blocks]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.embedding(x)
@@ -250,10 +251,7 @@ class GrowingResidualMLP(GrowingContainer):
         min_value = tensor.min().item()
         max_value = tensor.max().item()
         mean_value = tensor.mean().item()
-        if tensor.numel() > 1:
-            std_value = tensor.std().item()
-        else:
-            std_value = -1
+        std_value = tensor.std().item() if tensor.numel() > 1 else -1
         return {
             "min": min_value,
             "max": max_value,
