@@ -4,18 +4,15 @@ Will allow to extend the basic blocks with more intermediate channels
 and to add basic blocks add the end of the stages.
 """
 
-from functools import partial
-from typing import Callable
-
 import torch
 from torch import nn
 
 from gromo.containers.growing_block import RestrictedConv2dGrowingBlock
-from gromo.containers.growing_container import GrowingContainer
+from gromo.containers.sequential_growing_container import SequentialGrowingContainer
 from gromo.modules.growing_normalisation import GrowingBatchNorm2d
 
 
-class ResNetBasicBlock(GrowingContainer):
+class ResNetBasicBlock(SequentialGrowingContainer):
     def __init__(
         self,
         in_features: int = 3,
@@ -71,8 +68,8 @@ class ResNetBasicBlock(GrowingContainer):
                     bias=False,
                     device=self.device,
                 ),
-                nn.BatchNorm2d(inplanes, device=self.device),
-                self.activation,
+                # nn.BatchNorm2d(inplanes, device=self.device),
+                # self.activation,
             )
         else:
             # For large inputs like ImageNet (224x224)
@@ -87,8 +84,8 @@ class ResNetBasicBlock(GrowingContainer):
                     bias=False,
                     device=self.device,
                 ),
-                nn.BatchNorm2d(inplanes, device=self.device),
-                self.activation,
+                # nn.BatchNorm2d(inplanes, device=self.device),
+                # self.activation,
                 nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
             )
 
@@ -158,6 +155,8 @@ class ResNetBasicBlock(GrowingContainer):
             self.stages.append(stage)
 
         self.post_net = nn.Sequential(
+            nn.BatchNorm2d(inplanes * (2 ** (nb_stages - 1)), device=self.device),
+            self.activation,
             nn.AdaptiveAvgPool2d((1, 1)),
             nn.Flatten(),
             nn.Linear(
@@ -171,7 +170,7 @@ class ResNetBasicBlock(GrowingContainer):
             stage: nn.Sequential
             for block in stage:  # type: ignore
                 block: RestrictedConv2dGrowingBlock
-                self._growing_layers.append(block)
+                self._growable_layers.append(block)
 
     def append_block(
         self,
@@ -219,7 +218,7 @@ class ResNetBasicBlock(GrowingContainer):
         )
         stage.append(new_block)
         # Add the new block to the growing layers list
-        self._growing_layers.append(new_block)
+        self._growable_layers.append(new_block)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.pre_net(x)
@@ -239,6 +238,11 @@ class ResNetBasicBlock(GrowingContainer):
                     x = block(x)
         x = self.post_net(x)
         return x
+
+    def number_of_neurons_to_add(self, growth_step=1) -> int:
+        """Get the number of neurons to add in the next growth step."""
+        layer = self._growable_layers[self.layer_to_grow_index]
+        return layer.out_features // growth_step
 
 
 def init_full_resnet_structure(
@@ -263,7 +267,7 @@ def init_full_resnet_structure(
         Used to infer initial in_features and
         to adjust the architecture for small inputs if needed.
     in_features : int | None
-        Number of input features (channels).
+        Number of input features (channels). If None, it will be inferred from input_shape.
     out_features : int
         Number of output features (channels).
     device : torch.device | str | None
@@ -290,6 +294,9 @@ def init_full_resnet_structure(
     ResNetBasicBlock
         The initialized ResNet-18 model.
     """
+    if isinstance(input_shape, torch.Size):
+        input_shape = tuple(input_shape)  # type: ignore
+        assert len(input_shape) == 3, "input_shape must be a tuple of (C, H, W)"
     if in_features is None:
         in_features = input_shape[0]
     if small_inputs is None:
@@ -328,13 +335,6 @@ def init_full_resnet_structure(
     return model
 
 
-init_minimal_resnet_structure: Callable[..., ResNetBasicBlock] = partial(
-    init_full_resnet_structure, number_of_blocks_per_stage=1
-)
-init_full_resnet18_structure: Callable[..., ResNetBasicBlock] = init_full_resnet_structure
-init_full_resnet34_structure: Callable[..., ResNetBasicBlock] = init_full_resnet_structure
-
-
 if __name__ == "__main__":
     # set_device("cpu")
     from torchinfo import summary
@@ -350,7 +350,7 @@ if __name__ == "__main__":
 
     # Example usage for CIFAR-sized inputs
     print("\n=== CIFAR-style ResNet ===")
-    model_cifar = ResNetBasicBlock(out_features=10, small_inputs=True)
+    model_cifar = init_full_resnet_structure(input_shape=(3, 32, 32))
     print(model_cifar)
 
     # Create dummy input tensors
