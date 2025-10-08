@@ -1955,7 +1955,10 @@ class GrowingModule(torch.nn.Module):
 
     @torch.no_grad()
     def copy_uniform_initialization(
-        self, tensor: torch.Tensor, fan_in: int
+        self,
+        tensor: torch.Tensor,
+        fan_in: int,
+        layer_part: str = "weight",
     ) -> torch.Tensor:
         """
         Initialize the tensor with a uniform law with bounds
@@ -1967,8 +1970,11 @@ class GrowingModule(torch.nn.Module):
         extension.
         """
         # Get the standard deviation from the main layer weights
-        if hasattr(self.layer, "weight") and self.layer.weight is not None:
-            std_dev = self.layer.weight.std().item()
+        if (
+            hasattr(self.layer, layer_part)
+            and getattr(self.layer, layer_part) is not None
+        ):
+            std_dev = getattr(self.layer, layer_part).std().item()
         else:
             # Fallback to Xavier uniform initialization bounds
             std_dev = 1.0 / (fan_in**0.5)
@@ -2033,7 +2039,7 @@ class GrowingModule(torch.nn.Module):
 
         known_inits = {
             "copy_uniform": self.copy_uniform_initialization,
-            "zeros": lambda tensor, size: torch.zeros_like(tensor),
+            "zeros": lambda tensor, _, __: torch.zeros_like(tensor),
             # Future initializations can be added here
         }
 
@@ -2065,9 +2071,13 @@ class GrowingModule(torch.nn.Module):
             "Therefore, it can't be initialized."
         )
         init = output_extension_init
-        known_inits[init](layer_to_init.weight, self.previous_module.in_features)
+        known_inits[init](
+            layer_to_init.weight, self.previous_module.in_features, layer_part="weight"
+        )
         if layer_to_init.bias is not None:
-            known_inits[init](layer_to_init.bias, self.previous_module.in_features)
+            known_inits[init](
+                layer_to_init.bias, self.previous_module.in_features, layer_part="bias"
+            )
 
 
 if __name__ == "__main__":
