@@ -1055,6 +1055,70 @@ class Conv2dGrowingModule(GrowingModule):
         self.update_input_size()
         super(Conv2dGrowingModule, self).update_computation()
 
+    def create_layer_in_extension(self, extension_size: int) -> None:
+        """
+        Create the layer input extension of given size.
+
+        Parameters
+        ----------
+        extension_size: int
+            size of the extension to create
+        """
+        # Create a conv2d layer for input extension
+        self.extended_input_layer = torch.nn.Conv2d(
+            extension_size,
+            self.out_channels,
+            kernel_size=self.kernel_size,
+            stride=self.stride,
+            padding=self.padding,
+            dilation=self.dilation,
+            bias=self.use_bias,
+            device=self.device,
+        )
+
+    def create_layer_out_extension(self, extension_size: int) -> None:
+        """
+        Create the layer output extension of given size.
+
+        Parameters
+        ----------
+        extension_size: int
+            size of the extension to create
+        """
+        # Create a conv2d layer for output extension
+        self.extended_output_layer = torch.nn.Conv2d(
+            self.in_channels,
+            extension_size,
+            kernel_size=self.kernel_size,
+            stride=self.stride,
+            padding=self.padding,
+            dilation=self.dilation,
+            bias=self.use_bias,
+            device=self.device,
+        )
+
+    @staticmethod
+    def get_fan_in_from_layer(layer: torch.nn.Module) -> int:
+        """
+        Get the fan_in (number of input features) from a given layer.
+
+        Parameters
+        ----------
+        layer: torch.nn.Module
+            layer to get the fan_in from
+
+        Returns
+        -------
+        int
+            fan_in of the layer
+        """
+        assert isinstance(
+            layer, torch.nn.Conv2d
+        ), f"The layer should be a torch.nn.Conv2d but got {type(layer)}."
+        # For Conv2d, fan_in = in_channels * kernel_height * kernel_width
+        kernel_height, kernel_width = layer.kernel_size
+        return layer.in_channels * kernel_height * kernel_width
+
 
 class RestrictedConv2dGrowingModule(Conv2dGrowingModule):
     """
