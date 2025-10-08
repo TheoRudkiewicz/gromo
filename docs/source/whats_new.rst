@@ -20,6 +20,7 @@ Develop branch
 Enhancements
 ~~~~~~~~~~~~
 
+- Add `ruff` linter to pre-commit hooks and to the CI (:gh:`151` by `Théo Rudkiewicz`_)
 - Add `GrowingBlock` to mimic a ResNet 18/34 block. (:gh:`106` by `Théo Rudkiewicz`_)
 - Improve `GrowingContainer` to allow `GrowingContainer` as submodules (:gh:`133` by `Théo Rudkiewicz`_ and `Stella Douka`_).
 - Create a `input_size` property in GrowingModule. (:gh:`143` by `Théo Rudkiewicz`_)
