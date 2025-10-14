@@ -1781,7 +1781,7 @@ class GrowingModule(torch.nn.Module):
             values are dictionaries of weight statistics.
         """
         layer_stats = {
-            "weight": self.tensor_statistics(self.layer.weight),
+            "weight": tensor_statistics(self.layer.weight),
         }
         if self.layer.bias is not None:
             layer_stats["bias"] = tensor_statistics(self.layer.bias)
@@ -2037,9 +2037,13 @@ class GrowingModule(torch.nn.Module):
         self.previous_module.create_layer_out_extension(output_extension_size)
         self.create_layer_in_extension(input_extension_size)
 
+        def zeros_(tensor: torch.Tensor, *_, **__) -> None:
+            torch.nn.init.zeros_(tensor)
+
         known_inits = {
+            "none": lambda *_, **__: None,
             "copy_uniform": self.copy_uniform_initialization,
-            "zeros": lambda tensor, _, __: torch.zeros_like(tensor),
+            "zeros": zeros_,
             # Future initializations can be added here
         }
 
