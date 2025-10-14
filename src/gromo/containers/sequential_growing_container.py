@@ -24,27 +24,39 @@ class SequentialGrowingContainer(GrowingContainer):
         self._growable_layers: list[GrowingModule | GrowingContainer] = []
         self.layer_to_grow_index = -1  # index inside _growable_layers
 
-    def set_growing_layers(self, scheduling_method: str = "all"):
+    def set_growing_layers(
+        self, scheduling_method: str = "all", index: int | None = None
+    ) -> None:
         """
-        Update the list of growable layers. This method should be called after a growth step is performed.
+        Update the list of growable layers. This method should be called after a growth
+        step is performed.
 
         Parameters
         ----------
         scheduling_method : str
             Method to use for scheduling the growth. Options are "sequential" and "all".
-            "sequential": only the next layer in the _growable_layers list is added to the _growing_layers list.
-            "all": all layers in the _growable_layers list are added to the _growing_layers list.
+            "sequential": only the next layer in the _growable_layers list is added to the
+            growing_layers list.
+            "all": all layers in the _growable_layers list are added to the
+            _growing_layers list.
+        index : int, optional
+            If scheduling_method is "sequential", this index specifies which layer to
+            grow next.
         """
         if scheduling_method == "sequential":
-            self.layer_to_grow_index = (self.layer_to_grow_index + 1) % len(
-                self._growable_layers
-            )
+            if index is None:
+                self.layer_to_grow_index = (self.layer_to_grow_index + 1) % len(
+                    self._growable_layers
+                )
+            else:
+                self.layer_to_grow_index = index
             self._growing_layers = [self._growable_layers[self.layer_to_grow_index]]
         elif scheduling_method == "all":
             self._growing_layers = self._growable_layers
         else:
             raise ValueError(
-                f"Invalid scheduling method: {scheduling_method}. Supported methods are 'sequential' and 'all'."
+                f"Invalid scheduling method: {scheduling_method}. Supported methods are "
+                f"'sequential' and 'all'."
             )
 
     def number_of_neurons_to_add(self, **kwargs) -> int:
