@@ -313,16 +313,19 @@ class GrowingBlock(GrowingContainer):
             update_previous=True,
         )
 
-    def apply_change(self) -> None:
+    def apply_change(self, extension_size: int | None = None) -> None:
         """
         Apply the optimal delta and extend the layer with current
         optimal delta and layer extension with the current scaling factor.
         """
-        assert (
-            self.eigenvalues_extension is not None
-        ), "No optimal added parameters computed."
-        self.second_layer.apply_change()
-        self.hidden_features += self.eigenvalues_extension.shape[0]
+        self.second_layer.apply_change(extension_size=extension_size)
+        if extension_size is None:
+            assert (
+                self.eigenvalues_extension is not None
+            ), "No way to know the extension size."
+            self.hidden_features += self.eigenvalues_extension.shape[0]
+        else:
+            self.hidden_features += extension_size
 
     def sub_select_optimal_added_parameters(
         self,
@@ -360,6 +363,37 @@ class GrowingBlock(GrowingContainer):
             self.second_layer.name: self.second_layer.weights_statistics(),
         }
         return stats
+
+    def create_layer_extensions(
+        self,
+        extension_size: int,
+        output_extension_size: int | None = None,
+        input_extension_size: int | None = None,
+        output_extension_init: str = "copy_uniform",
+        input_extension_init: str = "copy_uniform",
+    ) -> None:
+        """
+        Create the layer input and output extensions of given sizes.
+        Allow to have different sizes for input and output extensions,
+        this is useful for example is you connect a convolutional layer
+        to a linear layer.
+
+        Parameters
+        ----------
+        extension_size: int
+            size of the extension to create
+        output_extension_size: int | None
+            size of the output extension to create, if None use extension_size
+        input_extension_size: int | None
+            size of the input extension to create, if None use extension_size
+        """
+        self.second_layer.create_layer_extensions(
+            extension_size=extension_size,
+            output_extension_size=output_extension_size,
+            input_extension_size=input_extension_size,
+            output_extension_init=output_extension_init,
+            input_extension_init=input_extension_init,
+        )
 
 
 class LinearGrowingBlock(GrowingBlock):
