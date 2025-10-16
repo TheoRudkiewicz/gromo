@@ -1,3 +1,4 @@
+import types
 from warnings import warn
 
 import torch
@@ -60,7 +61,7 @@ class Conv2dMergeGrowingModule(MergeGrowingModule):
             return self.input_size[0] * self.input_size[1] * self.in_channels
         if len(self.previous_modules) <= 0:
             warn(
-                f"Cannot derive the number of features of Conv2dMergeGrowingModule without setting at least one previous module"
+                "Cannot derive the number of features of Conv2dMergeGrowingModule without setting at least one previous module"
             )
             return -1
         return self.previous_modules[0].output_volume
@@ -89,11 +90,13 @@ class Conv2dMergeGrowingModule(MergeGrowingModule):
     def padding(self) -> tuple[int, int]:
         if len(self.next_modules) <= 0:
             warn(
-                f"Cannot derive the padding of Conv2dMergeGrowingModule without setting at least one next module"
+                "Cannot derive the padding of Conv2dMergeGrowingModule without setting at least one next module"
             )
             return (0, 0)
         elif isinstance(self.next_modules[0], Conv2dGrowingModule):
             return self.next_modules[0].layer.padding
+        elif isinstance(self.next_modules[0], Conv2dMergeGrowingModule):
+            return self.next_modules[0].padding
         elif isinstance(
             self.next_modules[0], (LinearGrowingModule, LinearMergeGrowingModule)
         ):
@@ -105,11 +108,13 @@ class Conv2dMergeGrowingModule(MergeGrowingModule):
     def stride(self) -> tuple[int, int]:
         if len(self.next_modules) <= 0:
             warn(
-                f"Cannot derive the stride of Conv2dMergeGrowingModule without setting at least one next module"
+                "Cannot derive the stride of Conv2dMergeGrowingModule without setting at least one next module"
             )
             return (1, 1)
         elif isinstance(self.next_modules[0], Conv2dGrowingModule):
             return self.next_modules[0].layer.stride
+        elif isinstance(self.next_modules[0], Conv2dMergeGrowingModule):
+            return self.next_modules[0].stride
         elif isinstance(
             self.next_modules[0], (LinearGrowingModule, LinearMergeGrowingModule)
         ):
@@ -121,11 +126,13 @@ class Conv2dMergeGrowingModule(MergeGrowingModule):
     def dilation(self) -> tuple[int, int]:
         if len(self.next_modules) <= 0:
             warn(
-                f"Cannot derive the dilation of Conv2dMergeGrowingModule without setting at least one next module"
+                "Cannot derive the dilation of Conv2dMergeGrowingModule without setting at least one next module"
             )
             return (1, 1)
         elif isinstance(self.next_modules[0], Conv2dGrowingModule):
             return self.next_modules[0].layer.dilation
+        elif isinstance(self.next_modules[0], Conv2dMergeGrowingModule):
+            return self.next_modules[0].dilation
         elif isinstance(
             self.next_modules[0], (LinearGrowingModule, LinearMergeGrowingModule)
         ):
@@ -176,42 +183,28 @@ class Conv2dMergeGrowingModule(MergeGrowingModule):
             warn(
                 f"You are setting the next modules of {self.name} with a non-empty tensor S."
             )
+
         self.next_modules = next_modules if next_modules else []
 
-        # Assertions: all next modules must be either Conv2d or Linear growing modules.
-        # For Conv2d modules, kernel sizes must match.
-        next_list = next_modules if next_modules else []
-
-        # Check that all modules are allowed types
-        assert all(
-            isinstance(
-                m, (Conv2dGrowingModule, LinearGrowingModule, LinearMergeGrowingModule)
-            )
-            for m in next_list
-        ), f"All next modules must be instances of Conv2dGrowingModule, LinearGrowingModule or LinearMergeGrowingModule (error in {self.name})."
-
         # For Conv2d modules, check kernel size compatibility
-        for module in next_list:
+        for module in self.next_modules:
             if isinstance(module, Conv2dGrowingModule):
                 assert tuple(module.kernel_size) == tuple(
                     self.kernel_size
                 ), f"Kernel size of next Conv2d modules {module.kernel_size} must match this module's kernel_size {self.kernel_size} (error in {self.name})."
 
-        self.next_modules = next_list
-        for module in self.next_modules:
             if isinstance(module, (Conv2dGrowingModule, Conv2dMergeGrowingModule)):
                 assert (
                     module.in_channels == self.out_channels
                 ), f"Next module input channels {module.in_channels} should match {self.out_channels=}"
                 # assert module.input_volume == self.output_volume, f"Next module input volume {module.input_volume} should match {self.output_volume=}"
-                module.input_size = self.output_size
             elif isinstance(module, (LinearGrowingModule, LinearMergeGrowingModule)):
                 assert (
                     module.in_features == self.output_volume
                 ), f"Next module input features {module.in_features} should match {self.output_volume=}"
             else:
                 raise NotImplementedError(
-                    "The next modules must be either Linear or Convolution."
+                    f"All next modules must be instances of Conv2dGrowingModule, Conv2dMergeGrowingModule, LinearGrowingModule or LinearMergeGrowingModule (error in {self.name})."
                 )
 
     def set_previous_modules(
@@ -228,39 +221,34 @@ class Conv2dMergeGrowingModule(MergeGrowingModule):
 
         self.previous_modules = previous_modules if previous_modules else []
 
-        # Assertions: all previous modules must be Conv2dGrowingModule (not merge modules)
-        # and all must share the same kernel_size (and match this module's kernel_size).
-        prev_list = previous_modules if previous_modules else []
-
-        # First check type compatibility - should raise TypeError for incompatible types
-        for module in prev_list:
-            if not isinstance(module, Conv2dGrowingModule):
-                raise TypeError("The previous modules must be Conv2dGrowingModule.")
-
         # Then check kernel size constraints for all Conv2d modules
-        if len(prev_list) > 0:
-            first_ks = tuple(prev_list[0].kernel_size)
-            assert all(
-                tuple(m.kernel_size) == first_ks for m in prev_list
-            ), f"All previous modules must have the same kernel_size (error in {self.name}). Got {[m.kernel_size for m in prev_list]}"
-            assert (
-                tuple(self.kernel_size) == first_ks
-            ), f"Kernel size of previous modules {first_ks} must match this module's kernel_size {self.kernel_size} (error in {self.name})."
-        self.previous_modules = prev_list
+        # if len(prev_list) > 0:
+        # first_ks = tuple(prev_list[0].kernel_size)
+        # assert all(
+        #     tuple(m.kernel_size) == first_ks for m in prev_list
+        # ), f"All previous modules must have the same kernel_size (error in {self.name}). Got {[m.kernel_size for m in prev_list]}"
+        # assert (
+        #     tuple(self.kernel_size) == first_ks
+        # ), f"Kernel size of previous modules {first_ks} must match this module's kernel_size {self.kernel_size} (error in {self.name})."
+
         self.total_in_features = 0
         for module in self.previous_modules:
-            if (
-                isinstance(module, (Conv2dGrowingModule, Conv2dMergeGrowingModule))
-                and module.out_channels != self.in_channels
-            ):
+            if not isinstance(module, (Conv2dGrowingModule, Conv2dMergeGrowingModule)):
+                raise TypeError(
+                    "The previous modules must be Conv2dGrowingModule or Conv2dMergeGrowingModule."
+                )
+
+            if module.out_channels != self.in_channels:
                 raise ValueError(
                     "The input channels must match the output channels of the previous modules."
                 )
-            if module.output_volume != self.input_volume:
-                raise ValueError(
-                    f"The output volume of the previous modules {module.output_volume} should match the input volume {self.input_volume=}."
-                )
-            self.total_in_features += module.in_features + module.use_bias
+            if isinstance(module, Conv2dGrowingModule):
+                if module.output_volume != self.input_volume:
+                    raise ValueError(
+                        f"The output volume of the previous modules {module.output_volume} should match the input volume {self.input_volume=}."
+                    )
+                self.total_in_features += module.in_features + module.use_bias
+
         if self.total_in_features > 0:
             if self.input_size is None:
                 self.input_size = (
@@ -534,6 +522,8 @@ class Conv2dGrowingModule(GrowingModule):
         self._input_size: tuple[int, int] | None = input_size
         self.use_bias = use_bias
 
+        self.layer.forward = types.MethodType(self.__make_safe_forward(), self.layer)
+
     # Information functions
     # TODO: implement activation_gradient ?
     # this function is used to estimate the F.O. improvement of the loss after the extension of the network
@@ -708,6 +698,32 @@ class Conv2dGrowingModule(GrowingModule):
             )
         else:
             return super(Conv2dGrowingModule, self).__str__(verbose=verbose)
+
+    def __make_safe_forward(self):
+        def _forward(conv_self, input: torch.Tensor) -> torch.Tensor:
+            if self.out_channels == 0:
+                n = input.shape[0]
+                return torch.zeros(
+                    n,
+                    0,
+                    self.out_height,
+                    self.out_width,
+                    device=self.device,
+                    requires_grad=True,
+                )
+            if self.in_channels == 0:
+                n = input.shape[0]
+                return torch.zeros(
+                    n,
+                    self.out_channels,
+                    self.out_height,
+                    self.out_width,
+                    device=self.device,
+                    requires_grad=True,
+                )
+            return torch.nn.Conv2d.forward(conv_self, input)
+
+        return _forward
 
     # Statistics computation
     def compute_s_update(self) -> tuple[torch.Tensor, int]:
@@ -894,7 +910,7 @@ class Conv2dGrowingModule(GrowingModule):
         if self.use_bias:
             assert (
                 bias is not None
-            ), f"The bias of the extension should be provided because the layer has a bias"
+            ), "The bias of the extension should be provided because the layer has a bias"
             self.layer = self.layer_of_tensor(
                 weight=torch.cat((self.weight, weight), dim=0),
                 bias=torch.cat((self.layer.bias, bias), dim=0),
@@ -902,7 +918,7 @@ class Conv2dGrowingModule(GrowingModule):
         else:
             if bias is not None:
                 warn(
-                    f"The bias of the extension should not be provided because the layer has no bias.",
+                    "The bias of the extension should not be provided because the layer has no bias.",
                     UserWarning,
                 )
             self.layer = self.layer_of_tensor(
@@ -927,7 +943,7 @@ class Conv2dGrowingModule(GrowingModule):
         """
         assert (
             self.extended_output_layer is not None
-        ), f"The layer should have an extended output layer to sub-select the output dimension."
+        ), "The layer should have an extended output layer to sub-select the output dimension."
         self.extended_output_layer = self.layer_of_tensor(
             self.extended_output_layer.weight[:keep_neurons],
             bias=(
@@ -961,8 +977,8 @@ class Conv2dGrowingModule(GrowingModule):
                 bias=self.extended_input_layer.bias,
             )
             assert self.eigenvalues_extension is not None, (
-                f"The eigenvalues of the extension should be computed before "
-                f"sub-selecting the optimal added parameters."
+                "The eigenvalues of the extension should be computed before "
+                "sub-selecting the optimal added parameters."
             )
             self.eigenvalues_extension = self.eigenvalues_extension[:keep_neurons]
 
@@ -975,11 +991,11 @@ class Conv2dGrowingModule(GrowingModule):
             elif isinstance(self.previous_module, LinearGrowingModule):
                 self.previous_module._sub_select_added_output_dimension(keep_neurons)
             elif isinstance(self.previous_module, LinearMergeGrowingModule):
-                raise NotImplementedError(f"TODO")
+                raise NotImplementedError("TODO")
             elif isinstance(self.previous_module, Conv2dGrowingModule):
                 self.previous_module._sub_select_added_output_dimension(keep_neurons)
             elif isinstance(self.previous_module, Conv2dMergeGrowingModule):
-                raise NotImplementedError(f"TODO")
+                raise NotImplementedError("TODO")
             else:
                 raise NotImplementedError(
                     f"The sub-selection of the optimal added parameters is not implemented "
@@ -1292,9 +1308,9 @@ class RestrictedConv2dGrowingModule(Conv2dGrowingModule):
             raise ValueError(
                 f"No previous module for {self.name}. Thus M_{-2} is not defined."
             )
-        elif isinstance(self.previous_module, LinearGrowingModule):
-            raise NotImplementedError("TODO: implement this")
-        elif isinstance(self.previous_module, LinearMergeGrowingModule):
+        elif isinstance(self.previous_module, LinearGrowingModule) or isinstance(
+            self.previous_module, LinearMergeGrowingModule
+        ):
             raise NotImplementedError("TODO: implement this")
         elif isinstance(self.previous_module, Conv2dGrowingModule):
             unfolded_extended_input = self.bordered_unfolded_extended_prev_input
@@ -1340,9 +1356,9 @@ class RestrictedConv2dGrowingModule(Conv2dGrowingModule):
             raise ValueError(
                 f"No previous module for {self.name}. Thus the cross covariance is not defined."
             )
-        elif isinstance(self.previous_module, LinearGrowingModule):
-            raise NotImplementedError("TODO: implement this")
-        elif isinstance(self.previous_module, LinearMergeGrowingModule):
+        elif isinstance(self.previous_module, LinearGrowingModule) or isinstance(
+            self.previous_module, LinearMergeGrowingModule
+        ):
             raise NotImplementedError("TODO: implement this")
         elif isinstance(self.previous_module, Conv2dGrowingModule):
             return (
@@ -1457,7 +1473,7 @@ class RestrictedConv2dGrowingModule(Conv2dGrowingModule):
         )
         assert (
             omega.shape[0] == self.out_channels
-        ), f"omega should have the same number of output features as the layer."
+        ), "omega should have the same number of output features as the layer."
 
         if self.previous_module.use_bias:
             alpha_weight = alpha[:, :-1]
@@ -1642,9 +1658,9 @@ class FullConv2dGrowingModule(Conv2dGrowingModule):
             raise ValueError(
                 f"No previous module for {self.name}. Thus M_{-2} is not defined."
             )
-        elif isinstance(self.previous_module, LinearGrowingModule):
-            raise NotImplementedError("TODO: implement this")
-        elif isinstance(self.previous_module, LinearMergeGrowingModule):
+        elif isinstance(self.previous_module, LinearGrowingModule) or isinstance(
+            self.previous_module, LinearMergeGrowingModule
+        ):
             raise NotImplementedError("TODO: implement this")
         elif isinstance(self.previous_module, Conv2dGrowingModule):
             return (
@@ -1703,9 +1719,9 @@ class FullConv2dGrowingModule(Conv2dGrowingModule):
             raise ValueError(
                 f"No previous module for {self.name}. Thus the cross covariance is not defined."
             )
-        elif isinstance(self.previous_module, LinearGrowingModule):
-            raise NotImplementedError("TODO: implement this")
-        elif isinstance(self.previous_module, LinearMergeGrowingModule):
+        elif isinstance(self.previous_module, LinearGrowingModule) or isinstance(
+            self.previous_module, LinearMergeGrowingModule
+        ):
             raise NotImplementedError("TODO: implement this")
         elif isinstance(self.previous_module, Conv2dGrowingModule):
             return (
@@ -1802,7 +1818,7 @@ class FullConv2dGrowingModule(Conv2dGrowingModule):
         assert (
             omega.shape[0]
             == self.out_channels * self.kernel_size[0] * self.kernel_size[1]
-        ), f"omega should have the same number of output features as the layer."
+        ), "omega should have the same number of output features as the layer."
 
         if self.previous_module.use_bias:
             alpha_weight = alpha[:, :-1]

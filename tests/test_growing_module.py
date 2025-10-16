@@ -197,7 +197,7 @@ class TestGrowingModule(TorchTestCase):
         self.assertIsInstance(l2.extended_output_layer, torch.nn.Identity)
 
         reset_all()
-        l2.delete_update(include_output=True)
+        l2.delete_update(delete_output=True)
         self.assertIsNone(l2.extended_input_layer)
         self.assertIsNone(l1.extended_output_layer)
         self.assertIsNone(l2.optimal_delta_layer)
@@ -570,6 +570,66 @@ class TestMergeGrowingModule(TorchTestCase):
         # Verify module was added
         self.assertEqual(len(self.merge_module.previous_modules), 1)
         self.assertEqual(self.merge_module.previous_modules[0], self.mock_module2)
+
+    def test_delete(self) -> None:
+        in_features = 5
+        hidden_features = 3
+        out_features = 2
+        # Test GrowingModule -> MergeGrowingModule -> GrowingModule
+        merge1 = LinearMergeGrowingModule(
+            in_features=in_features, device=global_device(), name="merge1"
+        )
+        prev_module = LinearGrowingModule(
+            in_features=in_features,
+            out_features=hidden_features,
+            device=global_device(),
+        )
+        merge2 = LinearMergeGrowingModule(
+            in_features=hidden_features, device=global_device(), name="merge2"
+        )
+        next_module = LinearGrowingModule(
+            in_features=hidden_features,
+            out_features=out_features,
+            device=global_device(),
+        )
+        merge3 = LinearMergeGrowingModule(
+            in_features=out_features, device=global_device(), name="merge3"
+        )
+        merge1.add_next_module(prev_module)
+        prev_module.previous_module = merge1
+        prev_module.next_module = merge2
+        merge2.add_previous_module(prev_module)
+        merge2.add_next_module(next_module)
+        next_module.previous_module = merge2
+        next_module.next_module = merge3
+        merge3.add_previous_module(next_module)
+
+        merge2.__del__()
+
+        self.assertEqual(len(merge2.previous_modules), 0)
+        self.assertEqual(len(merge2.next_modules), 0)
+        self.assertIsNone(prev_module.next_module)
+        self.assertIsNone(next_module.previous_module)
+        self.assertEqual(len(merge1.next_modules), 0)
+        self.assertEqual(len(merge3.previous_modules), 0)
+
+        # Test MergeGrowingModule -> MergeGrowingModule -> MergeGrowingModule
+        merge1 = LinearMergeGrowingModule(
+            in_features=hidden_features, device=global_device(), name="merge1"
+        )
+        merge3 = LinearMergeGrowingModule(
+            in_features=hidden_features, device=global_device(), name="merge3"
+        )
+        merge1.add_next_module(merge2)
+        merge2.add_previous_module(merge1)
+        merge2.add_next_module(merge3)
+        merge3.add_previous_module(merge2)
+
+        merge2.__del__()
+        self.assertEqual(len(merge2.previous_modules), 0)
+        self.assertEqual(len(merge2.next_modules), 0)
+        self.assertEqual(len(merge1.next_modules), 0)
+        self.assertEqual(len(merge3.previous_modules), 0)
 
 
 class TestGrowingModuleEdgeCases(TorchTestCase):
@@ -957,6 +1017,67 @@ class TestMergeGrowingModuleUpdateComputation(TorchTestCase):
 
         self.assertTrue(True)  # If we get here, the lines were executed
 
+    def test_projected_v_goal(self) -> None:
+        """Expressivity bottleneck when two MergeGrowingModule objects are connected"""
+        # Create modules
+        batch_size = 2
+        in_features = 3
+        hidden_features = 4
+        out_features = 2
+        layer1 = LinearGrowingModule(
+            in_features=in_features,
+            out_features=hidden_features,
+            device=global_device(),
+            name="l1",
+        )
+        merge1 = LinearMergeGrowingModule(in_features=hidden_features, name="m1")
+        merge2 = LinearMergeGrowingModule(in_features=hidden_features, name="m2")
+        layer2 = LinearGrowingModule(
+            in_features=hidden_features,
+            out_features=out_features,
+            device=global_device(),
+            name="l2",
+        )
+
+        # Set up connections
+        layer1.next_module = merge1
+        merge1.add_previous_module(layer1)
+        merge1.add_next_module(merge2)
+        merge2.add_previous_module(merge1)
+        merge2.add_next_module(layer2)
+        layer2.previous_module = merge2
+
+        # Initialize tensors
+        layer1.init_computation()
+        merge1.init_computation()
+        merge2.init_computation()
+        layer2.init_computation()
+
+        # Run forward pass to generate tensor statistics
+        x = torch.randn(2, 3, device=global_device())
+        # prev_module.store_input = True
+        out = layer1(x)
+        out = merge1(out)
+        out = merge2(out)
+        out = layer2(out)
+
+        # Generate gradients
+        loss = torch.norm(out)
+        loss.backward()
+
+        # Update computations to generate statistics
+        merge1.update_computation()
+        layer2.update_computation()
+
+        merge1.compute_optimal_delta()
+        layer2.compute_optimal_delta()
+
+        v_goal_merge1 = merge1.projected_v_goal()
+        v_goal_merge2 = merge2.projected_v_goal()
+
+        self.assertEqual(v_goal_merge1.shape, (batch_size, hidden_features))
+        self.assertTrue(torch.all(v_goal_merge1 == v_goal_merge2))
+
 
 class TestMergeGrowingModuleComputeOptimalDelta(TorchTestCase):
     """Comprehensive tests for MergeGrowingModule.compute_optimal_delta method."""
@@ -1110,11 +1231,13 @@ class TestMergeGrowingModuleComputeOptimalDelta(TorchTestCase):
                 mock_s.return_value = torch.randn(10, 10)  # Wrong size
                 return original_func(*args, **kwargs)
 
-        with unittest.mock.patch.object(
-            self.merge_module, "compute_optimal_delta", side_effect=mock_method
+        with (
+            unittest.mock.patch.object(
+                self.merge_module, "compute_optimal_delta", side_effect=mock_method
+            ),
+            self.assertRaises(AssertionError),
         ):
-            with self.assertRaises(AssertionError):
-                self.merge_module.compute_optimal_delta()
+            self.merge_module.compute_optimal_delta()
 
 
 if __name__ == "__main__":
