@@ -7,7 +7,7 @@ import torch
 from gromo.config.loader import load_config
 from gromo.utils.tensor_statistic import TensorStatistic
 from gromo.utils.tools import compute_optimal_added_parameters, optimal_delta
-from gromo.utils.utils import get_correct_device, tensor_statistics
+from gromo.utils.utils import compute_tensor_stats, get_correct_device
 
 
 class MergeGrowingModule(torch.nn.Module):
@@ -26,7 +26,6 @@ class MergeGrowingModule(torch.nn.Module):
         device: torch.device | None = None,
         name: str | None = None,
     ) -> None:
-
         super(MergeGrowingModule, self).__init__()
         self._name = name
         self.name = (
@@ -946,9 +945,9 @@ class GrowingModule(torch.nn.Module):
     def input(self) -> torch.Tensor:
         if self.store_input:
             if self._internal_store_input:
-                assert self._input is not None, (
-                    "The input is not stored." "Apparently it was not computed yet."
-                )
+                assert (
+                    self._input is not None
+                ), "The input is not stored.Apparently it was not computed yet."
                 return self._input
             else:
                 assert self.previous_module, (
@@ -978,10 +977,9 @@ class GrowingModule(torch.nn.Module):
     def pre_activity(self) -> torch.Tensor:
         if self.store_pre_activity:
             if self._internal_store_pre_activity:
-                assert self._pre_activity is not None, (
-                    "The pre-activity is not stored."
-                    "Apparently it was not computed yet."
-                )
+                assert (
+                    self._pre_activity is not None
+                ), "The pre-activity is not stored.Apparently it was not computed yet."
                 return self._pre_activity
             else:
                 assert self.next_module, (
@@ -1781,10 +1779,10 @@ class GrowingModule(torch.nn.Module):
             values are dictionaries of weight statistics.
         """
         layer_stats = {
-            "weight": tensor_statistics(self.layer.weight),
+            "weight": compute_tensor_stats(self.layer.weight),
         }
         if self.layer.bias is not None:
-            layer_stats["bias"] = tensor_statistics(self.layer.bias)
+            layer_stats["bias"] = compute_tensor_stats(self.layer.bias)
 
         return layer_stats
 
