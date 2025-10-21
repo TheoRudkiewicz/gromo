@@ -395,6 +395,23 @@ class GrowingBlock(GrowingContainer):
             input_extension_init=input_extension_init,
         )
 
+    def normalise_optimal_updates(self, std_target: float | None = None) -> None:
+        """
+        Normalise the optimal updates so that the standard deviation of the
+        weights of the updates is equal to std_target.
+        If std_target is None, we use the standard deviation of the weights of the layer.
+        If the layer has no weights, we aim to have a std of 1 / sqrt(in_features).
+
+        Let s the target standard deviation then:
+        - optimal_delta_layer is scaled to have a std of s (so
+        by s / std(optimal_delta_layer))
+        - extended_input_layer is scaled to have a std of s (so
+        by s / std(extended_input_layer))
+        - extended_output_layer is scaled to match the scaling of the extended_input_layer
+        and the optimal_delta_layer (so by std(extended_input_layer) / std(optimal_delta_layer))
+        """
+        self.second_layer.normalise_optimal_updates(std_target=std_target)
+
 
 class LinearGrowingBlock(GrowingBlock):
     def __init__(
