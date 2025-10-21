@@ -681,6 +681,10 @@ class GrowingModule(torch.nn.Module):
     def in_features(self) -> int:
         raise NotImplementedError
 
+    @property
+    def out_features(self) -> int:
+        raise NotImplementedError
+
     # Parameters
     @property
     def input_volume(self) -> int:
@@ -1291,7 +1295,9 @@ class GrowingModule(torch.nn.Module):
         raise NotImplementedError
 
     def _apply_output_changes(
-        self, scaling_factor: float | torch.Tensor | None = None, extension_size: int = 0
+        self,
+        scaling_factor: float | torch.Tensor | None = None,
+        extension_size: int = 0,
     ) -> None:
         """
         Extend the layer output with the current layer output extension,
@@ -2090,6 +2096,9 @@ class GrowingModule(torch.nn.Module):
         input_extension_size: int | None
             size of the input extension to create, if None use extension_size
         """
+        assert (
+            extension_size >= 0
+        ), f"extension_size must be non-negative, got {extension_size}."
         if output_extension_size is None:
             output_extension_size = extension_size
         if input_extension_size is None:
