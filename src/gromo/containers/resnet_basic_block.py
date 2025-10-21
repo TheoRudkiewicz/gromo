@@ -53,6 +53,7 @@ class ResNetBasicBlock(SequentialGrowingContainer):
         )
         self.activation = activation.to(device)
         self.small_inputs = small_inputs
+        self.reduction_factor = reduction_factor
         inplanes = 64
 
         if small_inputs:
@@ -97,7 +98,7 @@ class ResNetBasicBlock(SequentialGrowingContainer):
             stage = nn.Sequential()
             input_channels = inplanes * (2 ** max(0, i - 1))
             output_channels = inplanes * (2**i)
-            hidden_channels = int(inplanes * (2**i) * reduction_factor)
+            hidden_channels = int(inplanes * (2**i) * self.reduction_factor)
 
             # For small inputs, adjust stride behavior
             # Skip stride=2 for the first stage to preserve spatial resolution
@@ -242,7 +243,9 @@ class ResNetBasicBlock(SequentialGrowingContainer):
     def number_of_neurons_to_add(self, growth_step=1) -> int:
         """Get the number of neurons to add in the next growth step."""
         layer = self._growable_layers[self.layer_to_grow_index]
-        return layer.out_features // growth_step
+        return (
+            layer.out_features - int(layer.out_features * self.reduction_factor)
+        ) // growth_step
 
 
 def init_full_resnet_structure(
@@ -339,7 +342,7 @@ if __name__ == "__main__":
     # set_device("cpu")
     from torchinfo import summary
 
-    from gromo.utils.utils import global_device, set_device
+    from gromo.utils.utils import global_device
 
     print(f"Using device {global_device()}")
 
@@ -373,7 +376,7 @@ if __name__ == "__main__":
 
     # Test with an appended block
     model_cifar.append_block()
-    print(f"\n=== CIFAR model after appending block ===")
+    print("\n=== CIFAR model after appending block ===")
     empty_block = model_cifar.stages[0][1]
     empty_block.init_computation()
 
