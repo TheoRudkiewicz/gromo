@@ -82,9 +82,38 @@ class GrowingBlock(GrowingContainer):
         # TODO: FIX this
         self.activation_derivative = 1
 
+    def __str__(self, verbose: int = 0) -> str:
+        if verbose == 0:
+            return (
+                f"{self.name} ({self.first_layer.__str__()} -> "
+                f"{self.second_layer.__str__()})"
+            )
+        elif verbose == 1:
+            return (
+                f"{self.name}:\n"
+                f"{self.first_layer.__str__(verbose=1)}"
+                f"\n->\n"
+                f"{self.second_layer.__str__(verbose=1)}"
+            )
+        elif verbose >= 2:
+            return (
+                f"{self.name}:\n"
+                f"Pre-activation: {self.pre_activation}\n"
+                f"Downsample: {self.downsample}\n"
+                f"{self.first_layer.__str__(verbose=2)}"
+                f"\n->\n"
+                f"{self.second_layer.__str__(verbose=2)}"
+            )
+        else:
+            raise ValueError("verbose must be a non-negative integer.")
+
     @property
     def eigenvalues_extension(self):
         return self.second_layer.eigenvalues_extension
+
+    @property
+    def parameter_update_decrease(self):
+        return self.second_layer.parameter_update_decrease
 
     @property
     def scaling_factor(self):
@@ -284,16 +313,19 @@ class GrowingBlock(GrowingContainer):
             update_previous=True,
         )
 
-    def apply_change(self) -> None:
+    def apply_change(self, extension_size: int | None = None) -> None:
         """
         Apply the optimal delta and extend the layer with current
         optimal delta and layer extension with the current scaling factor.
         """
-        assert (
-            self.eigenvalues_extension is not None
-        ), "No optimal added parameters computed."
-        self.second_layer.apply_change()
-        self.hidden_features += self.eigenvalues_extension.shape[0]
+        self.second_layer.apply_change(extension_size=extension_size)
+        if extension_size is None:
+            assert (
+                self.eigenvalues_extension is not None
+            ), "No way to know the extension size."
+            self.hidden_features += self.eigenvalues_extension.shape[0]
+        else:
+            self.hidden_features += extension_size
 
     def sub_select_optimal_added_parameters(
         self,
@@ -323,6 +355,62 @@ class GrowingBlock(GrowingContainer):
             first order improvement
         """
         return self.second_layer.first_order_improvement
+
+    def weights_statistics(self) -> dict[str, dict[str, dict[str, float]]]:
+        """Get the statistics of the weights in the growing layers."""
+        stats = {
+            self.first_layer.name: self.first_layer.weights_statistics(),
+            self.second_layer.name: self.second_layer.weights_statistics(),
+        }
+        return stats
+
+    def create_layer_extensions(
+        self,
+        extension_size: int,
+        output_extension_size: int | None = None,
+        input_extension_size: int | None = None,
+        output_extension_init: str = "copy_uniform",
+        input_extension_init: str = "copy_uniform",
+    ) -> None:
+        """
+        Create the layer input and output extensions of given sizes.
+        Allow to have different sizes for input and output extensions,
+        this is useful for example is you connect a convolutional layer
+        to a linear layer.
+
+        Parameters
+        ----------
+        extension_size: int
+            size of the extension to create
+        output_extension_size: int | None
+            size of the output extension to create, if None use extension_size
+        input_extension_size: int | None
+            size of the input extension to create, if None use extension_size
+        """
+        self.second_layer.create_layer_extensions(
+            extension_size=extension_size,
+            output_extension_size=output_extension_size,
+            input_extension_size=input_extension_size,
+            output_extension_init=output_extension_init,
+            input_extension_init=input_extension_init,
+        )
+
+    def normalise_optimal_updates(self, std_target: float | None = None) -> None:
+        """
+        Normalise the optimal updates so that the standard deviation of the
+        weights of the updates is equal to std_target.
+        If std_target is None, we use the standard deviation of the weights of the layer.
+        If the layer has no weights, we aim to have a std of 1 / sqrt(in_features).
+
+        Let s the target standard deviation then:
+        - optimal_delta_layer is scaled to have a std of s (so
+        by s / std(optimal_delta_layer))
+        - extended_input_layer is scaled to have a std of s (so
+        by s / std(extended_input_layer))
+        - extended_output_layer is scaled to match the scaling of the extended_input_layer
+        and the optimal_delta_layer (so by std(extended_input_layer) / std(optimal_delta_layer))
+        """
+        self.second_layer.normalise_optimal_updates(std_target=std_target)
 
 
 class LinearGrowingBlock(GrowingBlock):
