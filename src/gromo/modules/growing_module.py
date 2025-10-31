@@ -1305,7 +1305,9 @@ class GrowingModule(torch.nn.Module):
         raise NotImplementedError
 
     def _apply_output_changes(
-        self, scaling_factor: float | torch.Tensor | None = None, extension_size: int = 0
+        self,
+        scaling_factor: float | torch.Tensor | None = None,
+        extension_size: int = 0,
     ) -> None:
         """
         Extend the layer output with the current layer output extension,

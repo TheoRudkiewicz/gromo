@@ -3,6 +3,7 @@ from typing import Any, Callable, Iterable
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.utils.data
 from deprecated import deprecated
 
 
@@ -352,7 +353,7 @@ def mini_batch_gradient_descent(
             loss.backward()
 
             if isinstance(model, nn.Module):
-                avg_grad_norm = 0.0
+                avg_grad_norm: torch.Tensor = torch.tensor((0.0,), device=X.device)
                 for param in model.parameters():
                     assert isinstance(
                         param.grad, torch.Tensor
