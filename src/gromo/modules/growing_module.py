@@ -993,7 +993,7 @@ class GrowingModule(torch.nn.Module):
             if self._internal_store_input:
                 assert (
                     self._input is not None
-                ), "The input is not stored.Apparently it was not computed yet."
+                ), "The input is not stored. Apparently it was not computed yet."
                 return self._input
             else:
                 assert self.previous_module, (
@@ -1025,7 +1025,7 @@ class GrowingModule(torch.nn.Module):
             if self._internal_store_pre_activity:
                 assert (
                     self._pre_activity is not None
-                ), "The pre-activity is not stored.Apparently it was not computed yet."
+                ), "The pre-activity is not stored. Apparently it was not computed yet."
                 return self._pre_activity
             else:
                 assert self.next_module, (
@@ -1940,20 +1940,45 @@ class GrowingModule(torch.nn.Module):
                 scales[i] = scale
         assert all(isinstance(s, float) for s in scales)
         scales: list[float]
-        self.eigenvalues_extension *= (scales[0] * scales[1]) ** 0.5
-        if self.extended_output_layer is not None:
-            self.scale_layer(self.extended_output_layer, scales[0])
-        if (
-            self.previous_module is not None
-            and self.previous_module.extended_output_layer is not None
-        ):
-            self.scale_layer(self.previous_module.extended_output_layer, scales[1])
 
-    def normalise_optimal_updates(self, std_target: float | None = None) -> None:
+        if (
+            self.extended_input_layer is None
+            or self.previous_module is None
+            or self.previous_module.extended_output_layer is None
+        ):
+            raise ValueError(
+                "Cannot scale layer extension as one of the extensions is None."
+            )
+        self.scale_layer(self.extended_input_layer, scales[1])
+        self.scale_layer(self.previous_module.extended_output_layer, scales[0])
+        if self.eigenvalues_extension is not None:
+            self.eigenvalues_extension *= (scales[0] * scales[1]) ** 0.5
+
+    @staticmethod
+    def get_fan_in_from_layer(layer: torch.nn.Module) -> int:
         """
-        Normalise the optimal updates so that the standard deviation of the
+        Get the fan_in (number of input features) from a given layer.
+
+        Parameters
+        ----------
+        layer: torch.nn.Module
+            layer to get the fan_in from
+
+        Returns
+        -------
+        int
+            fan_in of the layer
+        """
+        raise NotImplementedError
+
+    def normalize_optimal_updates(self, std_target: float | None = None) -> None:
+        """
+        Normalize optimal update to target standard deviation
+
+        Normalize the optimal updates so that the standard deviation of the
         weights of the updates is equal to std_target.
-        If std_target is None, we use the standard deviation of the weights of the layer.
+        If std_target is None, we automatically determine it.
+        We use the standard deviation of the weights of the layer if it has weights.
         If the layer has no weights, we aim to have a std of 1 / sqrt(in_features).
 
         Let s the target standard deviation then:
@@ -1962,20 +1987,35 @@ class GrowingModule(torch.nn.Module):
         - extended_input_layer is scaled to have a std of s (so
         by s / std(extended_input_layer))
         - extended_output_layer is scaled to match the scaling of the extended_input_layer
-        and the optimal_delta_layer (so by std(extended_input_layer) / std(optimal_delta_layer))
+        and the optimal_delta_layer
+        (so by std(extended_input_layer) / std(optimal_delta_layer))
+
+        Parameters
+        ----------
+        std_target : float | None
+            target standard deviation for the weights of the updates
         """
         # Determine target standard deviation
         if std_target is None:
-            if hasattr(self.layer, "weight") and self.layer.weight is not None:
-                std_target = self.layer.weight.std().item()
+            if (
+                hasattr(self.layer, "weight")
+                and self.layer.weight is not None
+                and self.layer.weight.numel() > 0
+                and (std_target := self.layer.weight.std().item()) > 0
+            ):
+                std_target = std_target
             else:
                 # Use 1 / sqrt(in_features) as default
-                std_target = 1.0 / (self.in_features**0.5)
+                assert self.extended_input_layer is not None, (
+                    "Cannot determine std_target automatically as the layer has no "
+                    "weights and there is no extended_input_layer to get the "
+                    "number of input features from."
+                )
+                std_target = 1.0 / (
+                    self.get_fan_in_from_layer(self.extended_input_layer) ** 0.5
+                )
 
-        # Track scaling factors for extensions
         delta_scale = 1.0
-        input_extension_scale = 1.0
-
         # Get current standard deviations and calculate scaling factors
         if self.optimal_delta_layer is not None and hasattr(
             self.optimal_delta_layer, "weight"
@@ -1990,18 +2030,23 @@ class GrowingModule(torch.nn.Module):
             current_std = self.extended_input_layer.weight.std().item()
             if current_std > 0:
                 input_extension_scale = std_target / current_std
+            else:
+                input_extension_scale = 1.0 / (
+                    self.get_fan_in_from_layer(self.extended_input_layer) ** 0.5
+                )
+        else:
+            input_extension_scale = 1.0
 
         # Calculate output extension scale to maintain relationship
-        output_extension_scale = (
-            input_extension_scale / delta_scale if delta_scale > 0 else 1.0
-        )
+        output_extension_scale = input_extension_scale / delta_scale
 
         # Apply scaling using existing methods
         if self.optimal_delta_layer is not None and delta_scale != 1.0:
             self.scale_parameter_update(delta_scale)
 
-        if self.extended_input_layer is not None or (
-            self.previous_module is not None
+        if (
+            self.extended_input_layer is not None
+            and self.previous_module is not None
             and hasattr(self.previous_module, "extended_output_layer")
             and self.previous_module.extended_output_layer is not None
         ):
@@ -2035,52 +2080,43 @@ class GrowingModule(torch.nn.Module):
 
     @torch.no_grad()
     def copy_uniform_initialization(
-        self,
-        tensor: torch.Tensor,
-        fan_in: int,
-        layer_part: str = "weight",
-    ) -> torch.Tensor:
+        self, tensor: torch.Tensor, reference_tensor: torch.Tensor, fan_in: int
+    ) -> None:
         """
+        Initialize tensor with uniform law aligned on reference
+
         Initialize the tensor with a uniform law with bounds
         -sqrt(std(W)), sqrt(std(W))
-        where std(W) is the empirical variance of the weights of the layer
-        if the layer has weights, otherwise use
+        where std(W) is the empirical standard deviation of the reference_tensor
+        if the reference_tensor has a non-zero variance.
+        Otherwise, use bounds
         -1 / sqrt(fan_in), 1 / sqrt(fan_in)
         where fan_in is the number of input features of the
         extension.
-        """
-        # Get the standard deviation from the main layer weights
-        if (
-            hasattr(self.layer, layer_part)
-            and getattr(self.layer, layer_part) is not None
-        ):
-            std_dev = getattr(self.layer, layer_part).std().item()
-        else:
-            # Fallback to Xavier uniform initialization bounds
-            std_dev = 1.0 / (fan_in**0.5)
-
-        # Initialize with uniform distribution
-        bound = std_dev**0.5
-        torch.nn.init.uniform_(tensor, -bound, bound)
-
-        return tensor
-
-    @staticmethod
-    def get_fan_in_from_layer(layer: torch.nn.Module) -> int:
-        """
-        Get the fan_in (number of input features) from a given layer.
 
         Parameters
         ----------
-        layer: torch.nn.Module
-            layer to get the fan_in from
-
-        Returns
-        -------
-        int
-            fan_in of the layer
+        tensor: torch.Tensor
+            tensor to initialize
+        reference_tensor: torch.Tensor
+            tensor to get the standard deviation from
+        fan_in: int
+            number of input features of the extension
         """
-        raise NotImplementedError
+        # Get the standard deviation from the reference_tensor
+        if (
+            reference_tensor is not None
+            and (std_dev := reference_tensor.std().item()) > 0
+        ):
+            std_dev = std_dev
+        else:
+            # Fallback to Kaiming uniform initialization bounds
+            std_dev = 1.0 / (fan_in**0.5)
+
+        # Initialize with uniform distribution
+        # bound = std_dev**0.5
+        bound = 3.0**0.5 * std_dev
+        torch.nn.init.uniform_(tensor, -bound, bound)
 
     @torch.no_grad()
     def create_layer_extensions(
@@ -2092,9 +2128,11 @@ class GrowingModule(torch.nn.Module):
         input_extension_init: str = "copy_uniform",
     ) -> None:
         """
+        Create extension for layer input and output.
+
         Create the layer input and output extensions of given sizes.
         Allow to have different sizes for input and output extensions,
-        this is useful for example is you connect a convolutional layer
+        this is useful for example if you connect a convolutional layer
         to a linear layer.
 
         Parameters
@@ -2105,10 +2143,13 @@ class GrowingModule(torch.nn.Module):
             size of the output extension to create, if None use extension_size
         input_extension_size: int | None
             size of the input extension to create, if None use extension_size
+        output_extension_init: str
+            Initialization method for the output extension. Must be one of the keys
+            in `known_inits` (e.g., "copy_uniform", "zeros"). Default is "copy_uniform".
+        input_extension_init: str
+            Initialization method for the input extension. Must be one of the keys in
+            `known_inits` (e.g., "copy_uniform", "zeros"). Default is "copy_uniform".
         """
-        assert (
-            extension_size >= 0
-        ), f"extension_size must be non-negative, got {extension_size}."
         if output_extension_size is None:
             output_extension_size = extension_size
         if input_extension_size is None:
@@ -2120,13 +2161,9 @@ class GrowingModule(torch.nn.Module):
         self.previous_module.create_layer_out_extension(output_extension_size)
         self.create_layer_in_extension(input_extension_size)
 
-        def zeros_(tensor: torch.Tensor, *_, **__) -> None:
-            torch.nn.init.zeros_(tensor)
-
         known_inits = {
-            "none": lambda *_, **__: None,
             "copy_uniform": self.copy_uniform_initialization,
-            "zeros": zeros_,
+            "zeros": lambda tensor, _, __: torch.nn.init.zeros_(tensor),
             # Future initializations can be added here
         }
 
@@ -2145,10 +2182,12 @@ class GrowingModule(torch.nn.Module):
         )
         init = input_extension_init
 
-        known_inits[init](layer_to_init.weight, self.get_fan_in_from_layer(layer_to_init))
+        known_inits[init](
+            layer_to_init.weight, self.weight, self.get_fan_in_from_layer(layer_to_init)
+        )
         if layer_to_init.bias is not None:
             known_inits[init](
-                layer_to_init.bias, self.get_fan_in_from_layer(layer_to_init)
+                layer_to_init.bias, self.bias, self.get_fan_in_from_layer(layer_to_init)
             )
 
         # Initialize output extension
@@ -2159,11 +2198,15 @@ class GrowingModule(torch.nn.Module):
         )
         init = output_extension_init
         known_inits[init](
-            layer_to_init.weight, self.previous_module.in_features, layer_part="weight"
+            layer_to_init.weight,
+            self.previous_module.weight,
+            self.previous_module.get_fan_in_from_layer(layer_to_init),
         )
         if layer_to_init.bias is not None:
             known_inits[init](
-                layer_to_init.bias, self.previous_module.in_features, layer_part="bias"
+                layer_to_init.bias,
+                self.previous_module.bias,
+                self.previous_module.get_fan_in_from_layer(layer_to_init),
             )
 
 
