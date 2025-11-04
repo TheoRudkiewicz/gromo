@@ -28,8 +28,9 @@ class SequentialGrowingContainer(GrowingContainer):
         self, scheduling_method: str = "all", index: int | None = None
     ) -> None:
         """
-        Update the list of growable layers. This method should be called after a growth
-        step is performed.
+        Update the list of growable layers.
+
+        This method should be called after a growth step is performed.
 
         Parameters
         ----------
@@ -43,16 +44,26 @@ class SequentialGrowingContainer(GrowingContainer):
             If scheduling_method is "sequential", this index specifies which layer to
             grow next.
         """
-        if scheduling_method == "sequential":
-            if index is None:
-                self.layer_to_grow_index = (self.layer_to_grow_index + 1) % len(
-                    self._growable_layers
+        if isinstance(index, int):
+            if index < 0 or index >= len(self._growable_layers):
+                raise IndexError(
+                    f"Index {index} is out of bounds for _growable_layers with length "
+                    f"{len(self._growable_layers)}."
                 )
             else:
                 self.layer_to_grow_index = index
+                self._growing_layers = [self._growable_layers[self.layer_to_grow_index]]
+        elif scheduling_method == "sequential":
+            self.layer_to_grow_index = (self.layer_to_grow_index + 1) % len(
+                self._growable_layers
+            )
             self._growing_layers = [self._growable_layers[self.layer_to_grow_index]]
         elif scheduling_method == "all":
-            self._growing_layers = self._growable_layers
+            self._growing_layers = (  # pyright: ignore[reportIncompatibleVariableOverride]
+                self._growable_layers
+            )
+            # The above ignore is needed because we do not allow MergeGrowingModule in
+            # SequentialGrowingContainer, but it is allowed in GrowingContainer.
         else:
             raise ValueError(
                 f"Invalid scheduling method: {scheduling_method}. Supported methods are "
