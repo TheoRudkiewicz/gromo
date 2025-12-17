@@ -441,7 +441,7 @@ to download the full example code.</p>
 LinearGrowingModule(l1) module with 2 parameters (self._allow_growing=False, self.store_input=True, self.store_pre_activity=True).
 LinearGrowingModule(l2) module with 2 parameters (self._allow_growing=False, self.store_input=True, self.store_pre_activity=True).
 LinearGrowingModule(l3) module with 2 parameters (self._allow_growing=False, self.store_input=True, self.store_pre_activity=True).
-loss: 8.071809768676758
+loss: 11.109138488769531
 /home/runner/work/gromo/gromo/src/gromo/utils/tools.py:103: UserWarning: Using the pseudo-inverse for the computation of the optimal delta.
   warn(&quot;Using the pseudo-inverse for the computation of the optimal delta.&quot;)
 </pre></div>
@@ -494,9 +494,9 @@ loss: 8.071809768676758
 </div>
 <div class="sphx-glr-script-out highlight-none notranslate"><div class="highlight"><pre><span></span>l2.first_order_improvement=tensor(0.)
 l2.weight=Parameter containing:
-tensor([[-0.0133]], requires_grad=True)
+tensor([[-0.9324]], requires_grad=True)
 l2.bias=Parameter containing:
-tensor([-0.0087], requires_grad=True)
+tensor([-0.6250], requires_grad=True)
 l2.optimal_delta_layer=Linear(in_features=1, out_features=1, bias=True)
 l2.parameter_update_decrease=tensor(0.)
 l2.extended_input_layer=Linear(in_features=1, out_features=1, bias=True)
@@ -506,22 +506,22 @@ l2.extended_input_layer.bias=Parameter containing:
 tensor([0.], requires_grad=True)
 l1.extended_output_layer=Linear(in_features=1, out_features=1, bias=True)
 l2.eigenvalues_extension=tensor([0.])
-loss: 8.071809768676758, 0.0 improvement
+loss: 11.109138488769531, 0.0 improvement
 ------- New weights -------
 l1.weight=Parameter containing:
-tensor([[0.1387],
-        [0.0000]], requires_grad=True)
+tensor([[-0.9617],
+        [ 0.0000]], requires_grad=True)
 l2.weight=Parameter containing:
-tensor([[-0.0133,  0.0000]], requires_grad=True)
+tensor([[-0.9324,  0.0000]], requires_grad=True)
 l3.weight=Parameter containing:
-tensor([[0.4485]], requires_grad=True)
+tensor([[0.4327]], requires_grad=True)
 ------- New biases -------
 l1.bias=Parameter containing:
-tensor([-0.9806, -0.0000], requires_grad=True)
+tensor([0.9018, 0.0000], requires_grad=True)
 l2.bias=Parameter containing:
-tensor([-0.0087], requires_grad=True)
+tensor([-0.6250], requires_grad=True)
 l3.bias=Parameter containing:
-tensor([-0.5708], requires_grad=True)
+tensor([0.7855], requires_grad=True)
 LinearGrowingModule(l1) module with 4 parameters.
         Layer : Linear(in_features=1, out_features=2, bias=True)
         Post layer function : ReLU()
@@ -564,7 +564,7 @@ LinearGrowingModule(l3) module with 2 parameters.
         Optimal delta layer : None
         Extended input layer : None
         Extended output layer : None
-loss: 8.071809768676758
+loss: 11.109138488769531
 </pre></div>
 </div>
 <p class="sphx-glr-timing"><strong>Total running time of the script:</strong> (0 minutes 0.019 seconds)</p>
