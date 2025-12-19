@@ -1,13 +1,35 @@
 """
-Provide unittest class for code using torch.
-
- - assertShapeEqual: check the shape of a torch tensor
- - assertAllClose: check that two torch tensors are equal up to a tolerance
+Provide:
+- SizedIdentity, a torch.nn.Identity module with a fixed input size
+- GrowableIdentity, a SizedIdentity that can grow its input size
+- indicator_batch, a function to create a batch of indicator tensors
+- TorchTestCase, a unittest class for code using torch, with:
+    - assertShapeEqual: check the shape of a torch tensor
+    - assertAllClose: check that two torch tensors are equal up to a tolerance
 """
 
 from unittest import TestCase
 
 import torch
+
+
+class SizedIdentity(torch.nn.Identity):
+    def __init__(self, size: int):
+        super().__init__()
+        self.num_features = size
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        if input.size(1) != self.num_features:
+            raise ValueError(
+                f"Input size of SizedIdentity must be {self.num_features}, "
+                f"but got {input.size(1)}"
+            )
+        return super().forward(input)
+
+
+class GrowableIdentity(SizedIdentity):
+    def grow(self, extension_size: int) -> None:
+        self.num_features += extension_size
 
 
 def indicator_batch(
@@ -44,7 +66,11 @@ def indicator_batch(
 
 class TorchTestCase(TestCase):
     def assertShapeEqual(
-        self, t: torch.Tensor, shape: tuple[int, ...], message: str = ""
+        self,
+        t: torch.Tensor,
+        shape: tuple[int | None, ...],
+        message: str = "",
+        msg: str = "",
     ):
         """
         Check the shape of a torch tensor is equal to the expected shape
@@ -57,7 +83,11 @@ class TorchTestCase(TestCase):
             expected shape, if a dimension is not tested set it to -1
         message: str
             message to display if the test fails
+        msg: str
+            alias for message (if message is not used)
         """
+        if message == "":
+            message = msg
         self.assertIsInstance(t, torch.Tensor)
         self.assertEqual(
             t.dim(),
@@ -65,7 +95,7 @@ class TorchTestCase(TestCase):
             f"Error: {t.dim()=} should be {len(shape)=}\n" f"{message}",
         )
         for i, s in enumerate(shape):
-            if s >= 0:
+            if s is not None and s >= 0:
                 self.assertEqual(
                     t.size(i),
                     s,
@@ -80,6 +110,7 @@ class TorchTestCase(TestCase):
         atol: float = 1e-8,
         rtol: float = 1e-5,
         message: str = "",
+        msg: str = "",
     ):
         """
         Check that two torch tensors are close.
@@ -96,7 +127,11 @@ class TorchTestCase(TestCase):
               relative tolerance
         message: str
               message to display if the test fails
+        msg: str
+            alias for message (if message is not used)
         """
+        if message == "":
+            message = msg
         self.assertIsInstance(a, torch.Tensor)
         self.assertIsInstance(b, torch.Tensor)
         self.assertEqual(

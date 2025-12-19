@@ -18,8 +18,8 @@ def sqrt_inverse_matrix_semi_positive(
     threshold: float
         threshold to consider an eigenvalue as zero
     preferred_linalg_library: None | str in ("magma", "cusolver")
-        linalg library to use, "cusolver" may failed
-        for non positive definite matrix if CUDA < 12.1 is used
+        linalg library to use, "cusolver" may fail
+        for non-positive definite matrix if CUDA < 12.1 is used
         see: https://pytorch.org/docs/stable/generated/torch.linalg.eigh.html
 
     Returns
@@ -47,6 +47,87 @@ def sqrt_inverse_matrix_semi_positive(
     eigenvalues = torch.rsqrt(eigenvalues[selected_eigenvalues])  # inverse square root
     eigenvectors = eigenvectors[:, selected_eigenvalues]
     return eigenvectors @ torch.diag(eigenvalues) @ eigenvectors.t()
+
+
+def optimal_delta(
+    tensor_s: torch.Tensor,
+    tensor_m: torch.Tensor,
+    dtype: torch.dtype = torch.float32,
+    force_pseudo_inverse: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Compute the optimal delta for the layer using current S and M tensors.
+
+    dW* = S[-1]^-1 M (if needed we use the pseudo-inverse)
+
+    Compute dW* (and dBias* if needed).
+    L(A + gamma * B * dW) = L(A) - gamma * d + o(gamma)
+    where d is the first order decrease and gamma the scaling factor.
+
+    Parameters
+    ----------
+    tensor_s: torch.Tensor, of shape [total_in_features, total_in_features]
+        S tensor from calling layer, shape
+    tensor_m: torch.Tensor, of shape [total_in_features, in_features]
+        M tensor from calling layer
+    dtype: torch.dtype, default torch.float32
+        dtype for S and M during the computation
+    force_pseudo_inverse: bool, default False
+        if True, use the pseudo-inverse to compute the optimal delta even if the
+        matrix is invertible
+
+    Returns
+    -------
+    tuple[torch.Tensor, torch.Tensor]
+        the optimal delta weights and the first order decrease
+    """
+    # Ensure both tensors have the same dtype initially
+    assert tensor_s.dtype == tensor_m.dtype, (
+        f"Both input tensors must have the same dtype, "
+        f"got tensor_s.dtype={tensor_s.dtype} and tensor_m.dtype={tensor_m.dtype}"
+    )
+
+    saved_dtype = tensor_s.dtype
+    if tensor_s.dtype != dtype:
+        tensor_s = tensor_s.to(dtype=dtype)
+    if tensor_m.dtype != dtype:
+        tensor_m = tensor_m.to(dtype=dtype)
+
+    if not force_pseudo_inverse:
+        try:
+            delta_raw = torch.linalg.solve(tensor_s, tensor_m).t()
+        except torch.linalg.LinAlgError:
+            force_pseudo_inverse = True
+            # self.delta_raw = torch.linalg.lstsq(tensor_s, tensor_m).solution.t()
+            # do not use lstsq because it does not work with the GPU
+            warn("Using the pseudo-inverse for the computation of the optimal delta.")
+    if force_pseudo_inverse:
+        delta_raw = (torch.linalg.pinv(tensor_s) @ tensor_m).t()
+
+    assert delta_raw is not None, "delta_raw should be computed by now."
+    assert (
+        delta_raw.isnan().sum() == 0
+    ), "The optimal delta should not contain NaN values."
+    parameter_update_decrease = torch.trace(tensor_m @ delta_raw)
+    if parameter_update_decrease < 0:
+        warn(
+            "The parameter update decrease should be positive, "
+            f"but got {parameter_update_decrease=} for layer."
+        )
+        if not force_pseudo_inverse:
+            warn("Trying to use the pseudo-inverse with torch.float64.")
+            return optimal_delta(
+                tensor_s, tensor_m, dtype=torch.float64, force_pseudo_inverse=True
+            )
+        else:
+            warn("Failed to compute the optimal delta, set delta to zero.")
+            delta_raw.fill_(0)
+            parameter_update_decrease.fill_(0)
+    delta_raw = delta_raw.to(dtype=saved_dtype)
+    if isinstance(parameter_update_decrease, torch.Tensor):
+        parameter_update_decrease = parameter_update_decrease.to(dtype=saved_dtype)
+
+    return delta_raw, parameter_update_decrease
 
 
 def compute_optimal_added_parameters(
@@ -89,7 +170,7 @@ def compute_optimal_added_parameters(
         diff = torch.abs(matrix_s - matrix_s.t())
         warn(
             f"Warning: The input matrix S is not symmetric.\n"
-            f"Max difference: {diff.max():.2e},"
+            f"Max difference: {diff.max():.2e},\n"
             f"% of non-zero elements: {100 * (diff > 1e-10).sum() / diff.numel():.2f}%"
         )
         matrix_s = (matrix_s + matrix_s.t()) / 2
@@ -106,7 +187,7 @@ def compute_optimal_added_parameters(
     try:
         u, s, v = torch.linalg.svd(matrix_p, full_matrices=False)
     except torch.linalg.LinAlgError:
-        print(f"Warning: An error occurred during the SVD computation.")
+        print("Warning: An error occurred during the SVD computation.")
         print(f"matrix_s: {matrix_s.min()=}, {matrix_s.max()=}, {matrix_s.shape=}")
         print(f"matrix_n: {matrix_n.min()=}, {matrix_n.max()=}, {matrix_n.shape=}")
         print(
@@ -215,7 +296,7 @@ def compute_mask_tensor_t(
     )
     unfold = torch.nn.Unfold(
         kernel_size=conv.kernel_size,
-        padding=conv.padding,
+        padding=conv.padding,  # type: ignore
         stride=conv.stride,
         dilation=conv.dilation,
     )
@@ -229,3 +310,118 @@ def compute_mask_tensor_t(
             if t_info[k, lc] > 0:
                 tensor_t[lc, k, t_info[k, lc] - 1] = 1
     return tensor_t
+
+
+def create_bordering_effect_convolution(
+    channels: int,
+    convolution: torch.nn.Conv2d,
+) -> torch.nn.Conv2d:
+    """
+    Create a convolution that simulates the border effect of a convolution
+    on an unfolded tensor. The convolution can then be used in
+    `apply_border_effect_on_unfolded`.
+
+    Parameters
+    ----------
+    channels: int
+        Number of input channels for the convolution, warning
+        this is for the unfolded tensor, not the original tensor.
+        Therefore, it should be equal to C[-1] * C1.kernel_size[0] * C1.kernel_size[1].
+    convolution: torch.nn.Conv2d
+        convolutional layer to be applied on the unfolded tensor
+
+    Returns
+    -------
+    torch.nn.Conv2d
+        convolutional layer that simulates the border effect
+    """
+    if not isinstance(channels, int) or channels <= 0:
+        raise ValueError("Input 'input_channels' must be a positive integer.")
+    if not isinstance(convolution, torch.nn.Conv2d):
+        raise TypeError("Input 'convolution' must be a torch.nn.Conv2d instance.")
+
+    identity_conv = torch.nn.Conv2d(
+        in_channels=channels,
+        out_channels=channels,
+        groups=channels,
+        kernel_size=convolution.kernel_size,  # type: ignore
+        padding=convolution.padding,  # type: ignore
+        stride=convolution.stride,  # type: ignore
+        dilation=convolution.dilation,  # type: ignore
+        bias=False,
+        device=convolution.weight.device,
+    )
+
+    identity_conv.weight.data.fill_(0)
+    mid = (convolution.kernel_size[0] // 2, convolution.kernel_size[1] // 2)
+    identity_conv.weight.data[:, 0, mid[0], mid[1]] = 1.0
+
+    return identity_conv
+
+
+@torch.no_grad()
+def apply_border_effect_on_unfolded(
+    unfolded_tensor: torch.Tensor,
+    original_size: tuple[int, int],
+    border_effect_conv: torch.nn.Conv2d | None = None,
+    identity_conv: torch.nn.Conv2d | None = None,
+) -> torch.Tensor:
+    """
+    Simulate the effect of a 1x1 convolution on the size of an unfolded tensor.
+    Should satisfy that for a convolution C1 and a convolution C2,
+    if B is the output of C1 of shape (n, C, H, W) we get
+    as unfolded tensor the unfolded input of C1 of shape
+    (n, C[-1] * C1.kernel_size[0] * C1.kernel_size[1], H * W).
+    Then B[+1] is the output of C2 of shape (n, C[+1], H[+1], W[+1])
+    the output of this function (noted F) should be of shape
+    (n, C[+1] * C2.kernel_size[0] * C2.kernel_size[1], H[+1] * W[+1])
+    such that if C2 has only 1x1 centered non-zero kernel
+    C2 o C1(F) should be equal to C1 o C2(B[+1]).
+
+    Parameters
+    ----------
+    unfolded_tensor: torch.Tensor
+        unfolded tensor to be modified
+    original_size: tuple[int, int]
+        original size of the tensor before unfolding
+    border_effect_conv: torch.Conv2d
+        convolutional layer to be applied on the unfolded tensor
+    identity_conv: torch.Conv2d
+        convolutional layer that simulates the identity effect,
+        if None, it will be created from `border_effect_conv`.
+
+    Returns
+    -------
+    torch.Tensor
+        modified unfolded tensor
+    """
+    if not isinstance(unfolded_tensor, torch.Tensor):
+        raise TypeError("Input 'unfolded_tensor' must be a torch.Tensor")
+    assert isinstance(border_effect_conv, torch.nn.Conv2d) or isinstance(
+        identity_conv, torch.nn.Conv2d
+    ), "Either 'border_effect_conv' or 'identity_conv' must be provided."
+    assert all(
+        isinstance(s, int) and s > 0 for s in original_size
+    ), "'original_size' must be a tuple of positive integers."
+
+    if identity_conv is None:
+        assert isinstance(
+            border_effect_conv, torch.nn.Conv2d
+        ), "'border_effect_conv' must be provided if 'identity_conv' is None."
+        channels = unfolded_tensor.shape[1]
+        identity_conv = create_bordering_effect_convolution(
+            channels=channels,
+            convolution=border_effect_conv,
+        )
+
+    unfolded_tensor = unfolded_tensor.reshape(
+        unfolded_tensor.shape[0],
+        unfolded_tensor.shape[1],
+        original_size[0],
+        original_size[1],
+    )
+
+    unfolded_tensor = identity_conv(unfolded_tensor)
+    unfolded_tensor = unfolded_tensor.flatten(start_dim=2)
+
+    return unfolded_tensor

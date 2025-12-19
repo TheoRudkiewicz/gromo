@@ -1,4 +1,5 @@
 import copy
+import string
 import warnings
 from collections import deque
 from typing import Callable, Iterator, Mapping
@@ -7,13 +8,23 @@ import networkx as nx
 import torch
 import torch.nn as nn
 
-from gromo.containers.growing_container import GrowingContainer, safe_forward
+from gromo.containers.growing_container import GrowingContainer
 from gromo.modules.constant_module import ConstantModule
+from gromo.modules.conv2d_growing_module import (
+    Conv2dMergeGrowingModule,
+    FullConv2dGrowingModule,
+)
+from gromo.modules.growing_module import GrowingModule, MergeGrowingModule
 from gromo.modules.linear_growing_module import (
     LinearGrowingModule,
     LinearMergeGrowingModule,
 )
-from gromo.utils.utils import activation_fn, f1_micro
+from gromo.utils.utils import (
+    activation_fn,
+    compute_BIC,
+    evaluate_extended_dataset,
+    f1_micro,
+)
 
 
 supported_layer_types = ["linear", "convolution"]
@@ -29,13 +40,14 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
         use_batch_norm: bool,
         default_layer_type: str = "linear",
         activation: str = "selu",
+        name: str = "",
         root: str = "start",
         end: str = "end",
+        input_shape: tuple[int, int] | None = None,
         DAG_parameters: dict = None,
         device: torch.device | str | None = None,
-        **kwargs,
     ) -> None:
-        nx.DiGraph.__init__(self, **kwargs)
+        nx.DiGraph.__init__(self)
         GrowingContainer.__init__(
             self,
             in_features=in_features,
@@ -46,15 +58,20 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
         self.use_bias = use_bias
         self.use_batch_norm = use_batch_norm
         self.activation = activation
-        self.root = root
-        self.end = end
-        self.flatten = nn.Flatten(start_dim=1)
+        if "_" in name:
+            raise ValueError(
+                f"The character '_' is not allowed in the name of a GrowingDAG. Found {name}."
+            )
+        self._name = name
+        self.root = f"{root}@{name}"
+        self.end = f"{end}@{name}"
 
         if default_layer_type not in supported_layer_types:
             raise NotImplementedError(
                 f"The default layer type is not supported. Expected one of {supported_layer_types}, got {default_layer_type}"
             )
         self.layer_type = default_layer_type
+        self.input_shape = input_shape
 
         if DAG_parameters is None:
             DAG_parameters = self.init_dag_parameters()
@@ -66,9 +83,57 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
 
         self.add_edges_from(edges)
         self.update_nodes(self.nodes, node_attributes)
-        self.update_edges(edges, edge_attributes)
+        self.update_edges(edges, edge_attributes, zero_weights=False)
         self.update_connections(edges)
-        self.id_last_node_added = max(len(node_attributes.keys()) - 2, 0)
+        self.set_growing_layers()
+
+    # Override functions from GrowingContainer
+
+    def set_growing_layers(self) -> None:
+        self._growing_layers = self.get_all_edge_modules() + self.get_all_node_modules()
+
+    def init_computation(self):
+        for node_module in self.get_all_node_modules():
+            if node_module._name == self.root:
+                node_module.store_activity = True
+            else:
+                node_module.init_computation()
+
+    def update_computation(self):
+        for node_module in self.get_all_node_modules():
+            if node_module._name == self.root:
+                continue
+            # node_module.previous_tensor_s.update()
+            # node_module.previous_tensor_m.update()
+            node_module.update_computation()
+
+    def reset_computation(self):
+        for node_module in self.get_all_node_modules():
+            node_module.reset_computation()
+
+    def compute_optimal_updates(self, *args, **kwargs):
+        self.compute_optimal_delta(*args, **kwargs)
+
+    def compute_optimal_delta(
+        self,
+        update: bool = True,
+        return_deltas: bool = False,
+        force_pseudo_inverse: bool = False,
+    ):
+        for node_module in self.get_all_node_modules():
+            if node_module._name == self.root:
+                continue
+            node_module.compute_optimal_delta(
+                update=update,
+                return_deltas=return_deltas,
+                force_pseudo_inverse=force_pseudo_inverse,
+            )
+
+    def delete_update(self):
+        for node_module in self.get_all_node_modules():
+            node_module.delete_update(include_previous=True)
+
+    # Initialize GrowingDAG and properties
 
     def init_dag_parameters(self) -> dict:
         edges = [(self.root, self.end)]
@@ -76,14 +141,21 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
             self.root: {
                 "type": self.layer_type,  # shows what follows
                 "size": self.in_features,
+                "shape": self.input_shape,
+                "kernel_size": (3, 3),
             },
             self.end: {
                 "type": self.layer_type,
                 "size": self.out_features,
+                "kernel_size": (3, 3),
                 "use_batch_norm": self.use_batch_norm,
             },
         }
-        edge_attributes = {"type": self.layer_type, "use_bias": self.use_bias}
+        edge_attributes = {
+            "type": self.layer_type,
+            "use_bias": self.use_bias,
+            "kernel_size": (3, 3),
+        }
 
         DAG_parameters = {}
         DAG_parameters["edges"] = edges
@@ -115,8 +187,10 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
     def out_degree(self) -> nx.reportviews.OutDegreeView:
         return super().out_degree
 
+    # Module setters and attributes
+
     def __set_edge_module(
-        self, prev_node: str, next_node: str, module: LinearGrowingModule
+        self, prev_node: str, next_node: str, module: GrowingModule
     ) -> None:
         """Setter function for module of edge
 
@@ -125,25 +199,133 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
         prev_node : str
             incoming node of edge
         next_node : str
-            outgoing module of edge
-        module : LinearGrowingModule
+            outgoing node of edge
+        module : GrowingModule
             growable module to set to edge
         """
+        edge = str((prev_node, next_node))
+        if edge in self._modules:
+            del self._modules[edge]
         self[prev_node][next_node]["module"] = module
+        self._modules[edge] = module
 
-    def __set_node_module(self, node: str, module: LinearMergeGrowingModule) -> None:
+    def __set_node_module(self, node: str, module: MergeGrowingModule) -> None:
         """Setter function for module of node
 
         Parameters
         ----------
         node : str
             specified node name
-        module : LinearMergeGrowingModule
+        module : MergeGrowingModule
             growable module to set to node
         """
+        if node in self._modules:
+            del self._modules[node]
         self.nodes[node]["module"] = module
+        self._modules[node] = module
 
-    def get_edge_module(self, prev_node: str, next_node: str) -> LinearGrowingModule:
+    def toggle_edge_candidate(
+        self, prev_node: str, next_node: str, candidate: bool
+    ) -> None:
+        """Toggle the candidate attribute of an edge
+
+        Parameters
+        ----------
+        prev_node : str
+            incoming node of edge
+        next_node : str
+            outgoing node of edge
+        candidate : bool
+            candidate value
+
+        Raises
+        ------
+        ValueError
+            raised if the edge does not exist
+        """
+        if prev_node is None or next_node is None:
+            return
+        if (prev_node, next_node) not in self.edges:
+            raise ValueError(
+                f"Edge ({prev_node}, {next_node}) is not present in the graph"
+            )
+        self[prev_node][next_node]["candidate"] = candidate
+
+    def toggle_node_candidate(self, node: str, candidate: bool) -> None:
+        """Toggle the candidate attribute of a node
+
+        Parameters
+        ----------
+        node : str
+            specified node name
+        candidate : bool
+            candidate value
+
+        Raises
+        ------
+        ValueError
+            raised if the node does not exist
+        """
+        if node is None:
+            return
+        if node not in self.nodes:
+            raise ValueError(f"Node {node} is not present in the graph")
+        self.nodes[node]["candidate"] = candidate
+
+    # Module getters and attributes
+
+    def is_edge_candidate(self, prev_node: str, next_node: str) -> bool:
+        """Know if an edge is a candidate edge
+
+        Parameters
+        ----------
+        prev_node : str
+            incoming node of edge
+        next_node : str
+            outgoing node of edge
+
+        Returns
+        -------
+        bool
+            candidate attribute
+        """
+        if ("_" in prev_node) or ("_" in next_node):
+            return True
+        if (prev_node, next_node) not in self.edges:
+            # default behaviour assumes only one GrowingDAG is growing at a time
+            warnings.warn(
+                f"Edge ({prev_node},{next_node}) does not belong in the current GrowingDAG({self._name}). All external edges are assumed to be non-candidate.",
+                UserWarning,
+            )
+            return False
+        return self[prev_node][next_node].get("candidate", False)
+
+    def is_node_candidate(self, node: str) -> bool:
+        """Know if a node is a candidate node
+
+        Parameters
+        ----------
+        node : str
+            specified node name
+
+        Returns
+        -------
+        bool
+            candidate attribute
+        """
+        if "_" in node:
+            return True
+        simple_nodes = {k.split("_")[0]: v for k, v in self.nodes.items() if node in k}
+        if node not in simple_nodes:
+            # default behaviour assumes only one GrowingDAG is growing at a time
+            warnings.warn(
+                f"Node {node} does not belong in the current GrowingDAG({self._name}). All external nodes are assumed to be non-candidate.",
+                UserWarning,
+            )
+            return False
+        return simple_nodes[node].get("candidate", False)
+
+    def get_edge_module(self, prev_node: str, next_node: str) -> GrowingModule:
         """Getter function for module of edge
 
         Parameters
@@ -155,12 +337,12 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
 
         Returns
         -------
-        LinearGrowingModule
+        GrowingModule
             module attached to edge
         """
         return self[prev_node][next_node]["module"]
 
-    def get_node_module(self, node: str) -> LinearMergeGrowingModule:
+    def get_node_module(self, node: str) -> MergeGrowingModule:
         """Getter function for module of node
 
         Parameters
@@ -170,27 +352,27 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
 
         Returns
         -------
-        LinearMergeGrowingModule
+        MergeGrowingModule
             module attached to node
         """
         return self.nodes[node]["module"]
 
-    def get_edge_modules(self, edges: list | set) -> list[LinearGrowingModule]:
+    def get_edge_modules(self, edges: list | set) -> list[GrowingModule]:
         """Getter function for modules attached to edges
 
         Parameters
         ----------
         edges : list
-            list fo edges to retrieve modules
+            list of edges to retrieve modules
 
         Returns
         -------
-        list[LinearGrowingModule]
+        list[GrowingModule]
             list of modules for each specified edge
         """
         return [self.get_edge_module(*edge) for edge in edges]
 
-    def get_node_modules(self, nodes: list | set) -> list[LinearMergeGrowingModule]:
+    def get_node_modules(self, nodes: list | set) -> list[MergeGrowingModule]:
         """Getter function for modules attached to nodes
 
         Parameters
@@ -200,13 +382,42 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
 
         Returns
         -------
-        list[LinearMergeGrowingModule]
+        list[MergeGrowingModule]
             list of modules for each specified node
         """
         return [self.get_node_module(node) for node in nodes]
 
+    def get_all_edge_modules(self) -> list[GrowingModule]:
+        """Getter function for all modules attached to edges
+
+        Returns
+        -------
+        list[GrowingModule]
+            list of modules for all existing edges
+        """
+        return self.get_edge_modules(list(self.edges))
+
+    def get_all_node_modules(self) -> list[MergeGrowingModule]:
+        """Getter function for all modules attached to nodes
+
+        Returns
+        -------
+        list[MergeGrowingModule]
+            list of modules for all existing nodes
+        """
+        return self.get_node_modules(list(self.nodes))
+
+    def is_empty(self) -> bool:
+        return nx.is_empty(self)
+
+    # Add new modules
+
     def add_direct_edge(
-        self, prev_node: str, next_node: str, edge_attributes: dict = {}
+        self,
+        prev_node: str,
+        next_node: str,
+        edge_attributes: dict = {},
+        zero_weights: bool = False,
     ) -> None:
         """Add direct edge to graph, link two nodes with a new module
 
@@ -218,11 +429,16 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
             outgoing node of edge
         edge_attributes : _type_, optional
             extra attributes of edge, by default {}
+        zero_weights : bool, optional
+            set the weights to zero, by default False
         """
         self.add_edge(prev_node, next_node)
         edges = [(prev_node, next_node)]
-        self.update_edges(edges, edge_attributes=edge_attributes)
+        self.update_edges(
+            edges, edge_attributes=edge_attributes, zero_weights=zero_weights
+        )
         self.update_connections(edges)
+        self.set_growing_layers()
 
     def add_node_with_two_edges(
         self,
@@ -231,6 +447,7 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
         next_node: str,
         node_attributes: dict,
         edge_attributes: dict = {},
+        zero_weights: bool = False,
     ) -> None:
         """Add new node to graph, create incoming and outgoing edges with new modules
 
@@ -246,6 +463,8 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
             attributes of new node
         edge_attributes : dict, optional
             extra attributes of edge, by default {}
+        zero_weights : bool, optional
+            set the weights to zero, by default False
 
         Raises
         ------
@@ -268,30 +487,11 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
         # TODO: separate functions for different modules, no need to check the type of node
         # self.nodes[new_node].update(node_attributes)
         self.update_nodes([new_node], node_attributes={new_node: node_attributes})
-        self.update_edges(new_edges, edge_attributes=edge_attributes)
+        self.update_edges(
+            new_edges, edge_attributes=edge_attributes, zero_weights=zero_weights
+        )
         self.update_connections(new_edges)
-        self.id_last_node_added += 1
-
-    def remove_direct_edge(self, prev_node: str, next_node: str) -> None:
-        """Remove direct edge from graph
-        Delete module instances from the connected nodes and update their size
-
-        Parameters
-        ----------
-        prev_node : str
-            incoming node of edge
-        next_node : str
-            outgoing node of edge
-        """
-        edge = (prev_node, next_node)
-        if edge in self.edges:
-            edge_module = self.get_edge_module(*edge)
-            edge_module.previous_module.next_modules.remove(edge_module)  # type: ignore
-            edge_module.previous_module.update_size()  # type: ignore
-            edge_module.next_module.previous_modules.remove(edge_module)  # type: ignore
-            edge_module.next_module.update_size()  # type: ignore
-            del edge_module
-            self.remove_edge(*edge)
+        self.set_growing_layers()
 
     def update_nodes(
         self, nodes: list | Mapping, node_attributes: dict[str, dict]
@@ -313,7 +513,6 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
             when size of node is not specified in node_attributes[node] dictionary
         """
         for node in nodes:
-            # attributes = node_attributes if len(nodes) == 1 else node_attributes[node]
             attributes = node_attributes.get(node, {})
             if "type" not in attributes:
                 raise KeyError(
@@ -324,30 +523,61 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
                     'The size of the node should be specified at initialization. Example: key "size" in node_attributes[new_node]'
                 )
             self.nodes[node].update(attributes)
+            if attributes.get("use_batch_norm", self.use_batch_norm):
+                batch_norm = nn.BatchNorm1d(
+                    self.nodes[node]["size"], affine=False, device=self.device
+                )
+            else:
+                batch_norm = nn.Identity()
+            name = node.split("_")[0]
             if self.nodes[node]["type"] == "linear":
                 in_features = self.nodes[node]["size"]
-                if attributes.get("use_batch_norm", self.use_batch_norm):
-                    batch_norm = nn.BatchNorm1d(
-                        in_features, affine=False, device=self.device
-                    )
-                else:
-                    batch_norm = nn.Identity()
                 self.__set_node_module(
                     node,
                     LinearMergeGrowingModule(
-                        allow_growing=True,
                         in_features=in_features,
                         post_merge_function=torch.nn.Sequential(
                             batch_norm,
                             activation_fn(self.nodes[node].get("activation")),
                         ),
+                        allow_growing=True,
                         device=self.device,
-                        name=f"{node}",
+                        name=f"{name}",
                     ),
                 )
+            elif self.nodes[node]["type"] == "convolution":
+                in_channels = self.nodes[node]["size"]
+                input_size = self.nodes[node].get("shape")
+                kernel_size = self.nodes[node]["kernel_size"]
+                input_volume = (
+                    in_channels * input_size[0] * input_size[1]
+                    if input_size is not None
+                    else None
+                )
+                self.__set_node_module(
+                    node,
+                    Conv2dMergeGrowingModule(
+                        in_channels=in_channels,
+                        input_size=input_size,
+                        next_kernel_size=kernel_size,
+                        input_volume=input_volume,
+                        post_merge_function=torch.nn.Sequential(
+                            batch_norm,
+                            activation_fn(self.nodes[node].get("activation")),
+                        ),
+                        allow_growing=True,
+                        device=self.device,
+                        name=f"{name}",
+                    ),
+                )
+            else:
+                raise NotImplementedError
 
     def update_edges(
-        self, edges: list[tuple[str, str]], edge_attributes: dict = {}
+        self,
+        edges: list[tuple[str, str]],
+        edge_attributes: dict = {},
+        zero_weights: bool = False,
     ) -> None:
         """Create new modules for edges based on node types
 
@@ -357,37 +587,86 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
             list of edges to update modules
         edge_attributes : dict, optional
             extra attributes for edges, by default {}
+        zero_weights : bool, optional
+            set the weights to zero, by default False
         """
         for prev_node, next_node in edges:
+            name = f"{prev_node.split('_')[0]}_{next_node.split('_')[0]}"
+
             if edge_attributes.get("constant"):
                 self.__set_edge_module(
                     prev_node,
                     next_node,
                     ConstantModule(
-                        in_features=self.nodes[prev_node]["size"],
+                        in_features=self.get_node_module(prev_node).out_features,
                         out_features=self.nodes[next_node]["size"],
                         device=self.device,
                     ),
                 )
                 self[prev_node][next_node]["type"] = "constant"
+                continue
             # If both nodes are linear
             elif (
                 self.nodes[prev_node]["type"] == "linear"
                 and self.nodes[next_node]["type"] == "linear"
             ):
-                self.__set_edge_module(
-                    prev_node,
-                    next_node,
-                    LinearGrowingModule(
-                        in_features=self.nodes[prev_node]["size"],
-                        out_features=self.nodes[next_node]["size"],
-                        use_bias=edge_attributes.get("use_bias", self.use_bias),
-                        device=self.device,
-                        name=f"l{prev_node}_{next_node}",
-                    ),
+                new_module = LinearGrowingModule(
+                    in_features=self.nodes[prev_node]["size"],
+                    out_features=self.nodes[next_node]["size"],
+                    use_bias=edge_attributes.get("use_bias", self.use_bias),
+                    device=self.device,
+                    name=f"L{name}",
                 )
-                self[prev_node][next_node]["type"] = "linear"
-                # TODO: set bias to zeros
+            elif (
+                self.nodes[prev_node]["type"] == "convolution"
+                and self.nodes[next_node]["type"] == "convolution"
+            ):
+                if "kernel_size" not in edge_attributes:
+                    raise KeyError(
+                        'The kernel size of the edge should be specified at initialization. Example: key "kernel_size" in edge_attributes'
+                    )
+                kernel_size = edge_attributes["kernel_size"]
+                input_size = self.get_node_module(prev_node).output_size
+                default_padding = ((kernel_size[0] - 1) // 2, (kernel_size[1] - 1) // 2)
+                new_module = FullConv2dGrowingModule(
+                    in_channels=self.nodes[prev_node]["size"],
+                    out_channels=self.nodes[next_node]["size"],
+                    kernel_size=kernel_size,
+                    input_size=input_size,
+                    stride=edge_attributes.get("stride", 1),
+                    padding=edge_attributes.get("padding", default_padding),
+                    dilation=edge_attributes.get("dilation", 1),
+                    use_bias=edge_attributes.get("use_bias", self.use_bias),
+                    # allow_growing=True,
+                    device=self.device,
+                    name=f"C{name}",
+                )
+            elif (
+                self.nodes[prev_node]["type"] == "convolution"
+                and self.nodes[next_node]["type"] == "linear"
+            ):
+                in_features = self.nodes[prev_node]["module"].out_features
+                new_module = LinearGrowingModule(
+                    in_features=in_features,
+                    out_features=self.nodes[next_node]["size"],
+                    use_bias=edge_attributes.get("use_bias", self.use_bias),
+                    device=self.device,
+                    name=f"L{name}",
+                )
+            else:
+                raise NotImplementedError
+
+            if zero_weights:
+                new_module.weight = nn.Parameter(torch.zeros_like(new_module.weight))
+                if new_module.use_bias:
+                    new_module.bias = nn.Parameter(torch.zeros_like(new_module.bias))
+
+            self.__set_edge_module(
+                prev_node,
+                next_node,
+                new_module,
+            )
+            self[prev_node][next_node]["type"] = self.nodes[next_node]["type"]
 
     def update_connections(self, edges: list) -> None:
         """Update connections to modules on specific edges and their adjacent nodes
@@ -424,14 +703,105 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
 
         self._get_ancestors(self.root)
 
+    def reset_computation(self) -> None:
+        """Reset the computation of the optimal added parameters on the whole network"""
+        for edge_module in self.get_all_edge_modules():
+            edge_module.reset_computation()
+        for node_module in self.get_all_node_modules():
+            node_module.reset_computation()
+
+    def delete_update(self) -> None:
+        """Delete extended input and output layers and optimal added parameters on the whole network"""
+        for edge_module in self.get_all_edge_modules():
+            edge_module.delete_update(delete_output=True, include_previous=False)
+        for node_module in self.get_all_node_modules():
+            node_module.delete_update()
+
     def is_empty(self) -> bool:
         return nx.is_empty(self)
 
+    def update_size(self) -> None:
+        super().update_size()
+        for node in self.nodes():
+            module = self.get_node_module(node)
+            if isinstance(module, Conv2dMergeGrowingModule):
+                size = module.in_channels
+            elif isinstance(module, LinearMergeGrowingModule):
+                size = module.in_features
+            self.nodes[node].update({"size": size})
+            if node == self.root:
+                self.in_features = size
+            elif node == self.end:
+                self.out_features = size
+
+    # Remove existing modules
+
+    def remove_direct_edge(self, prev_node: str, next_node: str) -> None:
+        """Remove direct edge from graph
+        Delete module instances from the connected nodes and update their size
+
+        Parameters
+        ----------
+        prev_node : str
+            incoming node of edge
+        next_node : str
+            outgoing node of edge
+        """
+        edge = (prev_node, next_node)
+        if edge in self.edges:
+            edge_module = self.get_edge_module(*edge)
+            edge_module.__del__()
+            self.remove_edge(*edge)
+            self._get_ancestors(self.root)
+            self.set_growing_layers()
+
+    def remove_node(self, node: str) -> None:
+        if node in self.nodes:
+            node_module = self.get_node_module(node)
+            node_module.__del__()
+            super().remove_node(node)
+            self._get_ancestors(self.root)
+            self.set_growing_layers()
+
+    def rename_nodes(self, mapping: dict) -> None:
+        """Rename nodes in the graph.
+
+        Parameters
+        ----------
+        mapping : dict
+            A dictionary mapping old node names to new node names.
+        """
+        # nx.relabel_nodes(self, mapping, copy=True)
+        for old_name, new_name in mapping.items():
+            if (new_name == old_name) or (old_name not in self.nodes):
+                continue
+            if new_name in self.nodes:
+                raise ValueError(
+                    f"New node name '{new_name}' already exists in the graph."
+                )
+            # Move successors
+            self._succ[new_name] = self._succ.pop(old_name)
+            # Update predecessors of successors
+            for succ in self._succ[new_name]:
+                self._pred[succ][new_name] = self._pred[succ].pop(old_name)
+
+            # Move predecessors
+            self._pred[new_name] = self._pred.pop(old_name)
+            # Update successors of predecessors
+            for pred in self._pred[new_name]:
+                self._succ[pred][new_name] = self._succ[pred].pop(old_name)
+
+            # Move node attributes
+            self._node[new_name] = self._node.pop(old_name)
+
+        # Update ancestors
+        self._get_ancestors(self.root)
+
+    # Calculate expressivity bottleneck of GrowingDAG
     def calculate_bottleneck(
         self,
         actions: list["Expansion"],
-        X: torch.Tensor,
-        Y: torch.Tensor,
+        dataloader: torch.utils.data.DataLoader,
         loss_fn: Callable = nn.CrossEntropyLoss(),
     ) -> tuple[dict, dict]:
         """Calculate expressivity bottleneck on important nodes
@@ -442,10 +812,8 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
         ----------
         actions : list[Expansion]
             list with growth actions information
-        X : torch.Tensor
-            train features
-        Y : torch.Tensor
-            train labels
+        dataloader : torch.utils.data.DataLoader
+            train features and labels
         loss_fn : Callable, optional
             loss function for bottleneck calculation, by default torch.nn.CrossEntropyLoss
 
@@ -472,81 +840,90 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
         for expansion in actions:
             prev_nodes = expansion.previous_nodes
             next_nodes = expansion.next_nodes
-            if not isinstance(prev_nodes, list):
-                prev_nodes = [prev_nodes]
-            if not isinstance(next_nodes, list):
-                next_nodes = [next_nodes]
 
             prev_node_modules.update(prev_nodes)
             next_node_modules.update(next_nodes)
 
-        # Add hooks on node modules of interest
         prev_node_modules = self.get_node_modules(prev_node_modules)
         next_node_modules = self.get_node_modules(next_node_modules)
-        for node_module in prev_node_modules:
-            node_module.store_activity = True
-        for node_module in next_node_modules:
-            node_module.init_computation()
 
-        # Forward - Backward step
-        pred = self(X)
-        loss = loss_fn(pred, Y)
-        loss.backward()
+        # Add hooks on node modules of interest
+        self.init_computation()
 
-        input_B = {}
+        pre_activities_grad = {
+            node_module._name: torch.empty(0) for node_module in next_node_modules
+        }
+        input_B = {node: torch.empty(0) for node in self.nodes}
         bottleneck = {}
 
-        # Update tensors
-        for node_module in next_node_modules:
-            assert node_module.previous_tensor_s is not None
-            assert node_module.previous_tensor_m is not None
-            node_module.previous_tensor_s.update()
-            node_module.previous_tensor_m.update()
+        # Forward - Backward step
+        for X, Y in dataloader:
+            self.zero_grad()
+            pred = self(X)
+            loss = loss_fn(pred, Y)
+            loss.backward()
+            self.update_computation()
 
-            # Compute optimal possible updates
-            deltas = node_module.compute_optimal_delta(update=True, return_deltas=True)
+            # Accumulate pre-activity gradients and input tensors on cpu
+            for node_module in next_node_modules:
+                assert node_module.pre_activity is not None
+                assert node_module.pre_activity.grad is not None
+                # Save pre activiy gradients
+                pre_activities_grad[node_module._name] = torch.cat(
+                    (
+                        pre_activities_grad[node_module._name],
+                        node_module.pre_activity.grad.clone().detach().cpu(),
+                    )
+                )
+            for node_module in self.get_all_node_modules():
+                assert node_module.activity is not None
+                # Save input activity of input layers
+                input_B[node_module._name] = torch.cat(
+                    (
+                        input_B[node_module._name],
+                        node_module.activity.clone().detach().cpu(),
+                    )
+                )
 
-            # Compute expressivity bottleneck
-            bottleneck[node_module._name] = (
-                node_module.projected_v_goal().clone().detach()
-            )  # (batch_size, out_features)
+        # Compute optimal updates
+        self.compute_optimal_delta()
 
-            del deltas
-            # TODO: separate to functions that add the hooks and remove them
+        with torch.no_grad():
+            for node_module in next_node_modules:
+                # Compute expressivity bottleneck
+                v_proj = pre_activities_grad[node_module._name]
+                for module in node_module.previous_modules:
+                    v_proj -= (
+                        module.optimal_delta_layer(
+                            input_B[module.previous_module._name].to(module.device)
+                        )
+                        .clone()
+                        .detach()
+                        .cpu()
+                    )
 
-            if constant_module:
-                assert torch.all(
-                    bottleneck[node_module._name] == node_module.pre_activity.grad
-                ), "Graph is empty and the bottleneck should be the same as the pre_activity gradient. Expected: {node_module.pre_activity.grad} Found: {bottleneck[node_module._name]}"
+                bottleneck[node_module._name] = v_proj
 
-            # Reset tensors and remove hooks
-            node_module.reset_computation()
+                if constant_module:
+                    assert torch.all(
+                        bottleneck[node_module._name]
+                        == pre_activities_grad[node_module._name]
+                    ), "Graph is empty and the bottleneck should be the same as the pre_activity gradient. Expected: {node_module.pre_activity.grad} Found: {bottleneck[node_module._name]}"
 
-        # Retrieve input activities
-        for node_module in prev_node_modules:
-            assert node_module.activity is not None
-            # Save input activity of input layers
-            input_B[node_module._name] = node_module.activity.clone().detach()
+        # Reset tensors and remove hooks
+        self.reset_computation()
 
-            # Reset tensors and remove hooks
-            node_module.store_activity = False
-            # node_module.delete_update()
-
-        # Reset all hooks
-        for next_node_module in next_node_modules:
-            for parallel_module in next_node_module.previous_modules:
-                parallel_module.reset_computation()
-                # DO NOT delete updates
-                # parallel_module.delete_update(include_previous=False)
-            # Delete activities
-            next_node_module.delete_update()
+        # Delete activities of node modules
+        for node_module in self.get_all_node_modules():
+            node_module.delete_update()
 
         if constant_module:
             # Remove constant module if needed
             self.remove_direct_edge(self.root, self.end)
-            self.remove_direct_edge(self.root, self.end)
 
         return bottleneck, input_B
+
+    # Helper functions for managing the DAG
 
     def _get_ancestors(self, root: str, pre_root: int = 0) -> None:
         """Discover all eventual ancestors of nodes
@@ -607,13 +984,15 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
         direct_edges = []
         for prev_node, successors in direct_successors.items():
             for next_node in successors:
-                # TODO: create getter for types
-                if (self.nodes[prev_node]["type"] == "linear") and (
-                    self.nodes[next_node]["type"] == "linear"
-                ):
-                    direct_edges.append(
-                        {"previous_node": prev_node, "next_node": next_node}
-                    )
+                # if len(list(self.predecessors(next_node))) >= 2:
+                #     continue
+                direct_edges.append(
+                    {
+                        "previous_node": prev_node,
+                        "next_node": next_node,
+                        "edge_attributes": {"kernel_size": (3, 3)},
+                    }
+                )
 
         return direct_edges
 
@@ -638,25 +1017,29 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
         """
 
         one_hop_edges = []
-        new_node = str(self.id_last_node_added + 1)
+        new_node = f"{len(self.nodes) - 1}@{self._name}"
         for prev_node, succ in successors.items():
             for next_node in succ:
-                if (self.nodes[prev_node]["type"] == "linear") and (
-                    self.nodes[next_node]["type"] == "linear"
-                ):
-                    if not self._indirect_connection_exists(prev_node, next_node):
-                        one_hop_edges.append(
-                            {
-                                "previous_node": prev_node,
-                                "new_node": new_node,
-                                "next_node": next_node,
-                                "node_attributes": {
-                                    "type": self.layer_type,
-                                    "size": size,
-                                    "activation": self.activation,
-                                },
-                            }
-                        )
+                if not self._indirect_connection_exists(prev_node, next_node):
+                    # if len(list(self.predecessors(next_node))) >= 2:
+                    #     continue
+                    one_hop_edges.append(
+                        {
+                            "previous_node": prev_node,
+                            "new_node": new_node,
+                            "next_node": next_node,
+                            "node_attributes": {
+                                "type": self.nodes[prev_node]["type"],
+                                "size": size,
+                                "activation": self.activation,
+                                "kernel_size": (3, 3),
+                                "shape": self.input_shape,
+                            },
+                            "edge_attributes": {
+                                "kernel_size": (3, 3),
+                            },
+                        }
+                    )
 
         return one_hop_edges
 
@@ -693,7 +1076,7 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
 
         return direct_edges, one_hop_edges
 
-    def define_next_actions(self) -> list["Expansion"]:
+    def define_next_actions(self, expand_end: bool = False) -> list["Expansion"]:
         """Find all possible growth extensions for the current graph
 
         Returns
@@ -711,18 +1094,24 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
         for attr in direct_edges:
             previous_node = attr.get("previous_node")
             next_node = attr.get("next_node")
+            edge_attributes = attr.get("edge_attributes", {})
 
             expansion = Expansion(
-                self, "new edge", previous_node=previous_node, next_node=next_node
+                self,
+                "new edge",
+                previous_node=previous_node,
+                next_node=next_node,
+                edge_attributes=edge_attributes,
             )
             actions.append(expansion)
 
         # All possible one-hop connections
-        for attr in one_hop_edges:
+        for i, attr in enumerate(one_hop_edges):
             previous_node = attr.get("previous_node")
-            new_node = attr.get("new_node")
+            new_node = f"{attr.get('new_node')}_{string.ascii_lowercase[i]}"
             next_node = attr.get("next_node")
             node_attributes = attr.get("node_attributes", {})
+            edge_attributes = attr.get("edge_attributes", {})
 
             expansion = Expansion(
                 self,
@@ -731,6 +1120,7 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
                 previous_node=previous_node,
                 next_node=next_node,
                 node_attributes=node_attributes,
+                edge_attributes=edge_attributes,
             )
             actions.append(expansion)
 
@@ -740,6 +1130,21 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
                 continue
             expansion = Expansion(self, "expanded node", expanding_node=node)
             actions.append(expansion)
+
+        if expand_end:
+            next_node = self.get_node_module(self.end).next_modules
+            if len(next_node) > 1:
+                raise NotImplementedError(
+                    "Can only expand single connected inter-merge nodes"
+                )
+            elif len(next_node) == 1:
+                expansion = InterMergeExpansion(
+                    self,
+                    "expanded node",
+                    expanding_node=self.end,
+                    adjacent_expanding_node=next_node[0]._name,
+                )
+                actions.append(expansion)
 
         return actions
 
@@ -772,6 +1177,8 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
 
         self.__recursiveBFS(q, nodes_visited, update)
 
+    # Forward functions
+
     def forward(self, x: torch.Tensor, verbose: bool = False) -> torch.Tensor:
         """Forward function for DAG model
 
@@ -789,7 +1196,6 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
         """
         if verbose:
             print("\nForward DAG...")
-        x = self.flatten(x)
         output = {self.root: x}
         for node in nx.topological_sort(self):
             if verbose:
@@ -799,7 +1205,7 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
                 if verbose:
                     print("\t-->", module.name, module)
                 module_input = output[previous_node]
-                activity = safe_forward(module, module_input)
+                activity = module(module_input)
 
                 assert activity.shape[1] == self.nodes[node]["size"]
 
@@ -816,13 +1222,22 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
             print()
         return output[self.end]
 
-    def extended_forward(self, x: torch.Tensor, verbose: bool = False) -> torch.Tensor:
+    def extended_forward(
+        self,
+        x: torch.Tensor,
+        x_ext: torch.Tensor = None,
+        mask: dict = {},
+        verbose: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """Extended forward function for DAG model
 
         Parameters
         ----------
         x : torch.Tensor
             input tensor
+        mask : dict, optional
+            extension mask for specific nodes and edges, by default {}
+            example: mask["edges"] for edges and mask["nodes"] for nodes
         verbose : bool, optional
             print info, by default False
 
@@ -833,24 +1248,42 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
         """
         if verbose:
             print("\nExtended Forward DAG...")
-        x = self.flatten(x)
-        output: dict[str, tuple[torch.Tensor, torch.Tensor]] = {
-            self.root: (x, torch.empty(x.shape[0], 0))
-        }
+        output: dict[str, tuple[torch.Tensor, torch.Tensor]] = {self.root: (x, x_ext)}
         for node in nx.topological_sort(self):
+            # Check if node is a candidate node and is not present in the mask
+            if self.is_node_candidate(node) and node not in mask.get("nodes", {}):
+                continue
             if verbose:
                 print(f"{node=}")
             for previous_node in self.predecessors(node):
+                # Check if previous_node is a candidate node and is not present in the mask
+                if self.is_node_candidate(
+                    previous_node
+                ) and previous_node not in mask.get("nodes", {}):
+                    continue
+                # Check if (previous_node, node) is a candidate edge and is not present in the mask
+                if self.is_edge_candidate(previous_node, node) and (
+                    previous_node,
+                    node,
+                ) not in mask.get("edges", {}):
+                    continue
                 module = self.get_edge_module(previous_node, node)
                 if verbose:
                     print("\t-->", module.name, module)
                 module_input = output[previous_node]
-                activity, activity_ext = module.extended_forward(*module_input)
-                activity_ext = (
-                    activity_ext
-                    if activity_ext is not None
-                    else torch.empty(x.shape[0], module.out_features, device=self.device)
+                # Perform extended_forward on the edge layer
+                # if node in mask extend the output, if previous_node in mask extend the input
+                activity, activity_ext = module.extended_forward(
+                    *module_input,
+                    use_optimal_delta=True,
+                    use_extended_input=previous_node in mask.get("nodes", []),
+                    use_extended_output=node in mask.get("nodes", []),
                 )
+                # activity_ext = (
+                #     activity_ext
+                #     if activity_ext is not None
+                #     else torch.empty(0, x.shape[0], module.out_features, device=self.device)
+                # )
 
                 assert activity.shape[1] == self.nodes[node]["size"]
 
@@ -875,7 +1308,9 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
             )  # TODO: simplify
         if verbose:
             print()
-        return output[self.end][0]
+        return output[self.end]
+
+    # Parameters
 
     def parameters(self) -> Iterator:
         # TODO : Temporary solution
@@ -883,7 +1318,8 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
         for edge in self.edges:
             module = self.get_edge_module(*edge)
             param.append(module.weight)
-            param.append(module.bias)
+            if module.use_bias:
+                param.append(module.bias)
         return iter(param)
 
     def count_parameters_all(self) -> int:
@@ -914,6 +1350,8 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
             for edge in edges
             for param in self.get_edge_module(*edge).parameters()
         )
+
+    # Evaluation functions
 
     def evaluate(
         self,
@@ -946,6 +1384,53 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
             pred = self(x)
             loss = loss_fn(pred, y)
 
+        if self.out_features > 1 and y.dim() == 1:
+            final_pred = pred.argmax(axis=1)
+            correct = (final_pred == y).int().sum()
+            accuracy = (correct / pred.shape[0]).item()
+        else:
+            accuracy = -1
+
+        if with_f1score:
+            if self.out_features > 1:
+                f1score = f1_micro(y.cpu(), final_pred.cpu())
+            else:
+                f1score = -1
+            return accuracy, loss.item(), f1score
+
+        return accuracy, loss.item()
+
+    def evaluate_extended(
+        self,
+        x: torch.Tensor,
+        y: torch.Tensor,
+        loss_fn: Callable,
+        with_f1score: bool = False,
+    ) -> tuple[float, float] | tuple[float, float, float]:
+        """Evaluate extended network on batch
+
+        Important: Assumes that the batch is already on the correct device
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            input features tensor
+        y : torch.Tensor
+            true labels tensor
+        loss_fn : Callable
+            loss function for bottleneck calculation
+        with_f1score : bool, optional
+            calculate f1-score, by default False
+
+        Returns
+        -------
+        tuple[float, float] | tuple[float, float, float]
+            accuracy and loss, optionally f1-score
+        """
+        with torch.no_grad():
+            pred, _ = self.extended_forward(x)
+            loss = loss_fn(pred, y)
+
         if self.out_features > 1:
             final_pred = pred.argmax(axis=1)
             correct = (final_pred == y).int().sum()
@@ -961,6 +1446,39 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
             return accuracy, loss.item(), f1score
 
         return accuracy, loss.item()
+
+    # String representations
+
+    def __str__(self) -> str:
+        nodes = list(self.nodes)
+        edges = list(self.edges)
+        lines = [f"GrowingDAG[{self._name}]("]
+        lines.append(f"\tNodes ({len(nodes)}):")
+        for i, n in enumerate(nodes):
+            activation = list(self.nodes[n]["module"].post_merge_function)
+            activation = (
+                "None"
+                if all([isinstance(act, torch.nn.Identity) for act in activation])
+                else str(activation)
+            )
+            attrs = {
+                "layer type": self.nodes[n]["type"],
+                "hidden size": self.nodes[n]["size"],
+                "activation": activation,
+            }
+            attr_str = ", ".join(f"{k}: {v}" for k, v in list(attrs.items()))
+            lines.append(f"\t\t{n} ({attr_str if attr_str else '{}'})")
+
+        lines.append(f"\tEdges ({len(edges)}):")
+        edge_str = ", ".join(f"{u}->{v}" for u, v in edges)
+        lines.append(f"\t\t{edge_str}")
+
+        lines.append(")")
+
+        return "\n".join(lines)
+
+    def __repr__(self) -> str:
+        return self.__str__()
 
 
 expansion_types = ["new edge", "new node", "expanded node"]
@@ -1005,8 +1523,8 @@ class Expansion:
                 f"The expansion type should be one of {expansion_types}. Found {type}."
             )
         self.type = type
-        self.dag = copy.deepcopy(dag)
-        self.growth_history = growth_history
+        self.dag = dag  # reference to the original dag
+        self.growth_history = copy.deepcopy(growth_history)
         self.metrics = {}
 
         self.expanding_node = expanding_node
@@ -1050,47 +1568,93 @@ class Expansion:
                 )
 
     @property
-    def previous_nodes(self) -> list[str] | str:
-        if self.type == "new edge":
-            return self.previous_node  # type: ignore
-        elif self.type == "new node":
+    def previous_nodes(self) -> list[str]:
+        if self.type == "new edge" or self.type == "new node":
             return [self.previous_node]  # type: ignore
         else:  # Expand existing node
-            return [n for n in self.dag.predecessors(self.expanding_node)]
+            return [
+                n
+                for n in self.dag.predecessors(self.expanding_node)
+                if not self.dag.is_node_candidate(n)
+            ]
 
     @property
-    def next_nodes(self) -> list[str] | str:
-        if self.type == "new edge":
-            return self.next_node  # type: ignore
-        elif self.type == "new node":
+    def next_nodes(self) -> list[str]:
+        if self.type == "new edge" or self.type == "new node":
             return [self.next_node]  # type: ignore
         else:
-            return [n for n in self.dag.successors(self.expanding_node)]
+            return [
+                n
+                for n in self.dag.successors(self.expanding_node)
+                if not self.dag.is_node_candidate(n)
+            ]
 
     @property
-    def new_edges(self) -> list[tuple] | tuple:
+    def new_edges(self) -> list[tuple]:
         if self.type == "new edge":
-            return (self.previous_node, self.next_node)
+            return [(self.previous_node, self.next_node)]
         elif self.type == "new node":
             return [
                 (self.previous_node, self.expanding_node),
                 (self.expanding_node, self.next_node),
             ]
         else:
-            new_edges = [in_edge for in_edge in self.dag.in_edges(self.expanding_node)]
+            new_edges = [
+                in_edge
+                for in_edge in self.dag.in_edges(self.expanding_node)
+                if not self.dag.is_node_candidate(in_edge[0])
+            ]
             new_edges.extend(
-                [out_edge for out_edge in self.dag.out_edges(self.expanding_node)]
+                [
+                    out_edge
+                    for out_edge in self.dag.out_edges(self.expanding_node)
+                    if not self.dag.is_node_candidate(out_edge[1])
+                ]
             )
             return new_edges
+
+    @property
+    def in_edges(self) -> list[GrowingModule]:
+        if self.type == "new edge":
+            return self.dag.get_edge_modules([(self.previous_node, self.next_node)])
+        elif self.type == "new node":
+            return self.dag.get_edge_modules([(self.previous_node, self.expanding_node)])
+        else:
+            return self.dag.get_edge_modules(
+                [
+                    in_edge
+                    for in_edge in self.dag.in_edges(self.expanding_node)
+                    if not self.dag.is_node_candidate(in_edge[0])
+                ]
+            )
+
+    @property
+    def out_edges(self) -> list[GrowingModule]:
+        if self.type == "new edge":
+            return self.dag.get_edge_modules([(self.previous_node, self.next_node)])
+        elif self.type == "new node":
+            return self.dag.get_edge_modules([(self.expanding_node, self.next_node)])
+        else:
+            return self.dag.get_edge_modules(
+                [
+                    out_edge
+                    for out_edge in self.dag.out_edges(self.expanding_node)
+                    if not self.dag.is_node_candidate(out_edge[1])
+                ]
+            )
 
     def expand(self) -> None:
         """Create new edge or node on the enclosed GrowingDAG"""
         if self.type == "new edge":
-            self.dag.add_direct_edge(self.previous_node, self.next_node, self.edge_attributes)  # type: ignore
+            self.dag.add_direct_edge(self.previous_node, self.next_node, self.edge_attributes, zero_weights=True)  # type: ignore
+            self.dag.toggle_edge_candidate(
+                self.previous_node, self.next_node, candidate=True
+            )
         elif self.type == "new node":
-            self.dag.add_node_with_two_edges(self.previous_node, self.expanding_node, self.next_node, self.node_attributes, self.edge_attributes)  # type: ignore
+            self.dag.add_node_with_two_edges(self.previous_node, self.expanding_node, self.next_node, self.node_attributes, self.edge_attributes, zero_weights=True)  # type: ignore
+            self.dag.toggle_node_candidate(self.expanding_node, candidate=True)
 
-    def update_growth_history(
+    def __update_growth_history(
         self,
         current_step: int,
         neurons_added: list = [],
@@ -1117,7 +1681,6 @@ class Expansion:
             self.growth_history[current_step].get(key, 0), new_value
         )
 
-        # TODO: automate
         step_update = {}
         for edge in self.dag.edges:
             new_value = (
@@ -1130,8 +1693,232 @@ class Expansion:
             step_update[str(node)] = keep_max(new_value, str(node))
         self.growth_history[current_step].update(step_update)
 
-    def __del__(self) -> None:
-        if "dag" in self.__dict__:
-            del self.dag
-            del self.growth_history
-            del self.metrics
+    def update_growth_history(self, current_step: int) -> None:
+        """Record recent modifications on history dictionary"""
+        nodes_added = [self.expanding_node]
+        neurons_added = self.new_edges
+        neurons_updated = list(self.dag.edges)
+        self.__update_growth_history(
+            current_step=current_step,
+            nodes_added=nodes_added,
+            neurons_added=neurons_added,
+            neurons_updated=neurons_updated,
+        )
+
+    def create_mask(self) -> dict:
+        mask = {
+            "nodes": [self.expanding_node],
+            "edges": self.new_edges,
+        }
+        return mask
+
+    def evaluate(
+        self,
+        model: GrowingContainer,
+        train_dataloader: torch.utils.data.DataLoader,
+        dev_dataloader: torch.utils.data.DataLoader,
+        val_dataloader: torch.utils.data.DataLoader,
+        loss_fn: Callable,
+    ) -> None:
+        """Evaluate GrowingContainer based on GrowingDAG expansion and save metrics
+
+        Parameters
+        ----------
+        model : GrowingContainer
+            container to be evaluated
+        train_dataloader : torch.utils.data.DataLoader
+            train dataloader
+        dev_dataloader : torch.utils.data.DataLoader
+            development dataloader
+        val_dataloader : torch.utils.data.DataLoader
+            validation dataloader
+        loss_fn : Callable
+            loss function
+        """
+        mask = self.create_mask()
+        acc_train, loss_train = evaluate_extended_dataset(
+            model, train_dataloader, loss_fn=loss_fn, mask=mask
+        )
+        acc_dev, loss_dev = evaluate_extended_dataset(
+            model, dev_dataloader, loss_fn=loss_fn, mask=mask
+        )
+        acc_val, loss_val = evaluate_extended_dataset(
+            model, val_dataloader, loss_fn=loss_fn, mask=mask
+        )
+
+        self.metrics["loss_train"] = loss_train
+        self.metrics["loss_dev"] = loss_dev
+        self.metrics["loss_val"] = loss_val
+        self.metrics["acc_train"] = acc_train
+        self.metrics["acc_dev"] = acc_dev
+        self.metrics["acc_val"] = acc_val
+        edges = []
+        for prev_node, next_node in self.dag.edges:
+            if (prev_node, next_node) in self.new_edges or (
+                not self.dag.is_node_candidate(prev_node)
+                and not self.dag.is_node_candidate(next_node)
+                and not self.dag.is_edge_candidate(prev_node, next_node)
+            ):
+                edges.append((prev_node, next_node))
+        nb_params = self.dag.count_parameters(edges=edges)
+        self.metrics["nb_params"] = nb_params
+        self.metrics["BIC"] = compute_BIC(
+            nb_params, loss_val, n=len(val_dataloader.dataset)
+        )
+
+    def __repr__(self) -> str:
+        if self.type == "new edge":
+            return f"[Expansion]: New edge from {self.previous_node} to {self.next_node}"
+        elif self.type == "new node":
+            return f"[Expansion]: New node {self.expanding_node} from {self.previous_node} to {self.next_node}"
+        elif self.type == "expanded node":
+            return f"[Expansion]: Expanding node {self.expanding_node}"
+        return "[Expansion]: NotImplemented"
+
+
+class InterMergeExpansion(Expansion):
+    def __init__(
+        self,
+        dag: GrowingDAG,
+        type: str,
+        growth_history: dict = {},
+        expanding_node: str | None = None,
+        previous_node: str | None = None,
+        next_node: str | None = None,
+        adjacent_expanding_node: str | None = None,
+        edge_attributes: dict = {},
+        node_attributes: dict = {},
+    ) -> None:
+        super().__init__(
+            dag,
+            type,
+            growth_history,
+            expanding_node,
+            previous_node,
+            next_node,
+            edge_attributes,
+            node_attributes,
+        )
+        self.adjacent_expanding_node = adjacent_expanding_node
+        self.previous_node = previous_node
+        self.next_node = next_node
+
+    @property
+    def previous_nodes(self) -> list[MergeGrowingModule]:
+        if self.type == "new edge" or self.type == "new node":
+            return [self.dag.get_node_module(self.previous_node)]
+        else:
+            previous_nodes = []
+            for edge in self.dag.get_node_module(self.expanding_node).previous_modules:
+                if isinstance(edge, GrowingModule):
+                    if not self.dag.is_node_candidate(edge.previous_module._name):
+                        previous_nodes.append(edge.previous_module)
+                elif isinstance(edge, MergeGrowingModule):
+                    for prev_edge in edge.previous_modules:
+                        if (
+                            not self.dag.is_node_candidate(
+                                prev_edge.previous_module._name
+                            )
+                            or self.expanding_node == self.dag.root
+                        ):  # TODO: this would not work for a different dag, assume no candidate nodes on the other one?
+                            previous_nodes.append(prev_edge.previous_module)
+            return previous_nodes
+
+    @property
+    def next_nodes(self) -> list[MergeGrowingModule]:
+        if self.type == "new edge" or self.type == "new node":
+            return [self.dag.get_node_module(self.next_node)]
+        else:
+            next_nodes = []
+            for edge in self.dag.get_node_module(self.expanding_node).next_modules:
+                if isinstance(edge, GrowingModule):
+                    if not self.dag.is_node_candidate(edge.next_module._name):
+                        next_nodes.append(edge.next_module)
+                elif isinstance(edge, MergeGrowingModule):
+                    for next_edge in edge.next_modules:
+                        if (
+                            not self.dag.is_node_candidate(next_edge.next_module._name)
+                            or self.expanding_node == self.dag.end
+                        ):
+                            next_nodes.append(next_edge.next_module)
+            return next_nodes
+
+    @property
+    def new_edges(self) -> list[GrowingModule]:
+        if self.type == "new edge" or self.type == "new node":
+            return self.dag.get_edge_modules(super().new_edges)
+        else:
+            new_edges = []
+            current_node_module = self.dag.get_node_module(self.expanding_node)
+            for edge in current_node_module.previous_modules:
+                if isinstance(edge, GrowingModule):
+                    if not self.dag.is_node_candidate(edge.previous_module._name):
+                        new_edges.append(edge)
+                elif isinstance(edge, MergeGrowingModule):
+                    for prev_edge in edge.previous_modules:
+                        if (
+                            self.expanding_node == self.dag.root
+                        ) or not self.dag.is_node_candidate(
+                            prev_edge.previous_module._name
+                        ):
+                            new_edges.append(prev_edge)
+            for edge in current_node_module.next_modules:
+                if isinstance(edge, GrowingModule):
+                    if not self.dag.is_node_candidate(edge.next_module._name):
+                        new_edges.append(edge)
+                elif isinstance(edge, MergeGrowingModule):
+                    for next_edge in edge.next_modules:
+                        if (
+                            self.expanding_node == self.dag.end
+                        ) or not self.dag.is_node_candidate(next_edge.next_module._name):
+                            new_edges.append(next_edge)
+            return new_edges
+
+    @property
+    def in_edges(self) -> list[GrowingModule]:
+        if self.type == "new edge":
+            return self.dag.get_edge_modules([(self.previous_node, self.next_node)])
+        elif self.type == "new node":
+            return self.dag.get_edge_modules([(self.previous_node, self.expanding_node)])
+        else:
+            in_edges = []
+            for edge in self.dag.get_node_module(self.expanding_node).previous_modules:
+                if isinstance(edge, GrowingModule):
+                    if not self.dag.is_node_candidate(edge.previous_module._name):
+                        in_edges.append(edge)
+                elif isinstance(edge, MergeGrowingModule):
+                    for prev_edge in edge.previous_modules:
+                        if (
+                            self.expanding_node == self.dag.root
+                        ) or not self.dag.is_node_candidate(
+                            prev_edge.previous_module._name
+                        ):
+                            in_edges.append(prev_edge)
+            return in_edges
+
+    @property
+    def out_edges(self) -> list[GrowingModule]:
+        if self.type == "new edge":
+            return self.dag.get_edge_modules([(self.previous_node, self.next_node)])
+        elif self.type == "new node":
+            return self.dag.get_edge_modules([(self.expanding_node, self.next_node)])
+        else:
+            out_edges = []
+            for edge in self.dag.get_node_module(self.expanding_node).next_modules:
+                if isinstance(edge, GrowingModule):
+                    if not self.dag.is_node_candidate(edge.next_module._name):
+                        out_edges.append(edge)
+                elif isinstance(edge, MergeGrowingModule):
+                    for next_edge in edge.next_modules:
+                        if (
+                            self.expanding_node == self.dag.end
+                        ) or not self.dag.is_node_candidate(next_edge.next_module._name):
+                            out_edges.append(next_edge)
+            return out_edges
+
+    def create_mask(self) -> dict:
+        mask = {
+            "nodes": [self.expanding_node, self.adjacent_expanding_node],
+            "edges": [edge._name for edge in self.new_edges],
+        }
+        return mask
