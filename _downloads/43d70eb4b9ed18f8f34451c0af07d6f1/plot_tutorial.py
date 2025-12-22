@@ -1,4 +1,4 @@
-r"""
+"""
 GroMo tutorial
 ==============
 
@@ -28,8 +28,7 @@ Then we define ``plt_model`` to visualize the model.
 ###############################################################################
 import matplotlib.pyplot as plt
 import torch
-from helpers.auxilliary_functions import evaluate_model, train
-from helpers.syntetic_data import SinDataloader
+from helpers.auxilliary_functions import SinDataloader, evaluate_model, train
 
 from gromo.modules.linear_growing_module import LinearGrowingModule
 from gromo.utils.utils import global_device
@@ -67,8 +66,8 @@ def plt_model(model: torch.nn.Module, fig: "plt.axes._axes.Axes") -> None:
 
 
 ###############################################################################
-device = global_device()
-data = SinDataloader(nb_sample=10, batch_size=100, device=device)
+
+data = SinDataloader(nb_sample=10, batch_size=100)
 loss_function = torch.nn.MSELoss()
 ###############################################################################
 # 1. Define the model
