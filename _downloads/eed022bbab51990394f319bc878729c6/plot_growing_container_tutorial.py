@@ -39,7 +39,7 @@ First, we import the necessary libraries:
 import matplotlib.pyplot as plt
 import torch
 import torch.utils.data
-from helpers.syntetic_data import MultiSinDataloader
+from helpers.synthetic_data import MultiSinDataloader
 
 from gromo.containers.growing_container import GrowingContainer
 from gromo.containers.growing_mlp import GrowingMLP
@@ -84,8 +84,9 @@ test_data_loader = MultiSinDataloader(
 # Defining the GrowingMLP Architecture
 # =====================================
 #
-# Before we use ``GrowingMLP``, let's look at its implementation to understand
-# how it works.
+# Before we use ``GrowingMLP``, let's look at its
+# `implementation <https://github.com/growingnet/gromo/blob/main/src/gromo/containers/growing_mlp.py>`_
+# to understand how it works.
 #
 # Key Components
 # ~~~~~~~~~~~~~~
@@ -98,22 +99,20 @@ test_data_loader = MultiSinDataloader(
 # Important Methods
 # ~~~~~~~~~~~~~~~~~
 #
-# +---------------------+----------------------------------------+
-# | Method              | Description                            |
-# +=====================+========================================+
-# | ``__init__``        | Define the layers, carefully link them |
-# |                     | together                               |
-# +---------------------+----------------------------------------+
-# | ``forward(x)``      | Standard forward pass using current    |
-# |                     | weights                                |
-# +---------------------+----------------------------------------+
-# | ``extended_forward``| Forward pass that includes proposed    |
-# |                     | new neurons                            |
-# +---------------------+----------------------------------------+
-# | ``set_growing_laye``| Select which layer(s) to grow          |
-# | ``rs(index)``       |                                        |
-# +---------------------+----------------------------------------+
-
+# +-------------------------------+----------------------------------------+
+# | Method                        | Description                            |
+# +===============================+========================================+
+# | ``__init__``                  | Define the layers, carefully link them |
+# |                               | together                               |
+# +-------------------------------+----------------------------------------+
+# | ``forward(x)``                | Standard forward pass using current    |
+# |                               | weights                                |
+# +-------------------------------+----------------------------------------+
+# | ``extended_forward``          | Forward pass that includes proposed    |
+# |                               | new neurons                            |
+# +-------------------------------+----------------------------------------+
+# | ``set_growing_layers(index)`` | Select which layer(s) to grow          |
+# +-------------------------------+----------------------------------------+
 ###############################################################################
 # Step 3: Define Helper Functions
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -348,7 +347,7 @@ model
 #
 # **What to observe:**
 #
-# - The model starts very small (only 3 hidden neurons)
+# - The model starts very small (only 4 hidden neurons, 2 per hidden layer)
 # - After each growth step, the model architecture changes (more neurons are
 #   added)
 # - Test loss should decrease as the network gains capacity

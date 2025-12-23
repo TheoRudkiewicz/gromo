@@ -64,7 +64,7 @@
     <script>DOCUMENTATION_OPTIONS.pagename = 'auto_examples/plot_growing_container_tutorial';</script>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Simple Growing Container Example" href="plot_growing_network.html" />
+    <link rel="next" title="GroMo tutorial" href="plot_growing_module_tutorial.html" />
     <link rel="prev" title="Examples" href="index.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
@@ -304,11 +304,10 @@
   <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
   <div class="bd-toc-item navbar-nav"><ul class="current nav bd-sidenav">
 <li class="toctree-l1 current active"><a class="current reference internal" href="#">GrowingContainer tutorial</a></li>
-
+<li class="toctree-l1"><a class="reference internal" href="plot_growing_module_tutorial.html">GroMo tutorial</a></li>
 <li class="toctree-l1"><a class="reference internal" href="plot_growing_network.html">Simple Growing Container Example</a></li>
 <li class="toctree-l1"><a class="reference internal" href="plot_linear_module.html">Minimal Linear Growing Layers</a></li>
 <li class="toctree-l1"><a class="reference internal" href="plot_mlp_run.html">MLP Example with Growing Layers</a></li>
-<li class="toctree-l1"><a class="reference internal" href="plot_tutorial.html">GroMo tutorial</a></li>
 </ul>
 </div>
 </nav></div>
@@ -405,7 +404,7 @@ generalized to other structures like a ResNet, a MLP Mixer, etc.</p>
 <div class="highlight-Python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">matplotlib.pyplot</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">plt</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">torch.utils.data</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">helpers.syntetic_data</span><span class="w"> </span><span class="kn">import</span> <a href="https://docs.python.org/3/library/typing.html#typing.Generic" title="typing.Generic" class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-class"><span class="n">MultiSinDataloader</span></a>
+<span class="kn">from</span><span class="w"> </span><span class="nn">helpers.synthetic_data</span><span class="w"> </span><span class="kn">import</span> <a href="https://docs.python.org/3/library/typing.html#typing.Generic" title="typing.Generic" class="sphx-glr-backref-module-typing sphx-glr-backref-type-py-class"><span class="n">MultiSinDataloader</span></a>
 
 <span class="kn">from</span><span class="w"> </span><span class="nn">gromo.containers.growing_container</span><span class="w"> </span><span class="kn">import</span> <span class="n">GrowingContainer</span>
 <span class="kn">from</span><span class="w"> </span><span class="nn">gromo.containers.growing_mlp</span><span class="w"> </span><span class="kn">import</span> <span class="n">GrowingMLP</span>
@@ -447,12 +446,10 @@ generalized to other structures like a ResNet, a MLP Mixer, etc.</p>
 <span class="p">)</span>
 </pre></div>
 </div>
-</section>
-</section>
-<section id="defining-the-growingmlp-architecture">
-<h1>Defining the GrowingMLP Architecture<a class="headerlink" href="#defining-the-growingmlp-architecture" title="Link to this heading">#</a></h1>
-<p>Before we use <code class="docutils literal notranslate"><span class="pre">GrowingMLP</span></code>, let’s look at its implementation to understand
-how it works.</p>
+<dl>
+<dt>Defining the GrowingMLP Architecture</dt><dd><p>Before we use <code class="docutils literal notranslate"><span class="pre">GrowingMLP</span></code>, let’s look at its
+<a class="reference external" href="https://github.com/growingnet/gromo/blob/main/src/gromo/containers/growing_mlp.py">implementation</a>
+to understand how it works.</p>
 <ul class="simple">
 <li><p><strong>LinearGrowingModule</strong>: A special linear layer that supports dynamic
 growth. Each layer can have neurons added to it during training.</p></li>
@@ -477,16 +474,19 @@ weights</p></td>
 <td><p>Forward pass that includes proposed
 new neurons</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">set_growing_laye</span></code>
-<code class="docutils literal notranslate"><span class="pre">rs(index)</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">set_growing_layers(index)</span></code></p></td>
 <td><p>Select which layer(s) to grow</p></td>
 </tr>
 </tbody>
 </table>
 </div>
-<p>We need three key functions to work with our growing network:</p>
+</dd>
+</dl>
+<blockquote>
+<div><p>We need three key functions to work with our growing network:</p>
 <p>A standard PyTorch training loop that performs one epoch of training using
 SGD optimizer with MSE loss.</p>
+</div></blockquote>
 <div class="highlight-Python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">train</span><span class="p">(</span>
     <span class="n">model</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">Module</span><span class="p">,</span>
     <span class="n">device</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span><span class="p">,</span>
@@ -517,6 +517,8 @@ SGD optimizer with MSE loss.</p>
         <span class="n">optimizer</span><span class="o">.</span><a href="https://docs.python.org/3/library/functions.html#int" title="builtins.int" class="sphx-glr-backref-module-builtins sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">step</span></a><span class="p">()</span>
 </pre></div>
 </div>
+<section id="evaluation-function">
+<h3>3.2 Evaluation Function<a class="headerlink" href="#evaluation-function" title="Link to this heading">#</a></h3>
 <p>The evaluation function computes the loss on a dataset. It supports two
 modes:</p>
 <ul class="simple">
@@ -568,6 +570,9 @@ proposed new neurons were added</p></li>
     <span class="k">return</span> <span class="n">loss</span>
 </pre></div>
 </div>
+</section>
+<section id="growth-function">
+<h3>3.3 Growth Function<a class="headerlink" href="#growth-function" title="Link to this heading">#</a></h3>
 <p>This is the <strong>core of GroMo</strong> - the function that intelligently grows the
 network. Here’s what happens step by step:</p>
 <ol class="arabic simple">
@@ -654,6 +659,8 @@ larger values add stronger contributions from new neurons.</p>
     <span class="n">model</span><span class="o">.</span><span class="n">apply_change</span><span class="p">()</span>
 </pre></div>
 </div>
+<section id="step-4-create-the-initial-model">
+<h4>Step 4: Create the Initial Model<a class="headerlink" href="#step-4-create-the-initial-model" title="Link to this heading">#</a></h4>
 <p>Now we create our <code class="docutils literal notranslate"><span class="pre">GrowingMLP</span></code> model with:</p>
 <ul class="simple">
 <li><p><strong>Input size</strong>: 10 (features)</p></li>
@@ -681,6 +688,9 @@ LinearGrowingModule(LinearGrowingModule(Layer 1))(in_features=2, out_features=2,
 LinearGrowingModule(LinearGrowingModule(Layer 2))(in_features=2, out_features=3, use_bias=True)
 </pre></div>
 </div>
+</section>
+<section id="step-5-training-loop-with-growth">
+<h4>Step 5: Training Loop with Growth<a class="headerlink" href="#step-5-training-loop-with-growth" title="Link to this heading">#</a></h4>
 <p>Now comes the exciting part! We run an iterative process that alternates
 between:</p>
 <ol class="arabic simple">
@@ -689,7 +699,7 @@ between:</p>
 </ol>
 <p><strong>What to observe:</strong></p>
 <ul class="simple">
-<li><p>The model starts very small (only 3 hidden neurons)</p></li>
+<li><p>The model starts very small (only 4 hidden neurons, 2 per hidden layer)</p></li>
 <li><p>After each growth step, the model architecture changes (more neurons are
 added)</p></li>
 <li><p>Test loss should decrease as the network gains capacity</p></li>
@@ -826,6 +836,9 @@ LinearGrowingModule(LinearGrowingModule(Layer 2))(in_features=6, out_features=3,
 [GRO], Step 16, Test Loss: 4.5823 (-0.0112)
 </pre></div>
 </div>
+</section>
+<section id="step-6-visualize-training-progress">
+<h4>Step 6: Visualize Training Progress<a class="headerlink" href="#step-6-visualize-training-progress" title="Link to this heading">#</a></h4>
 <p>Let’s plot the evolution of the model’s performance:</p>
 <ul class="simple">
 <li><p><strong>Test loss</strong> (left y-axis): Shows how well the model generalizes</p></li>
@@ -898,7 +911,7 @@ LinearGrowingModule(LinearGrowingModule(Layer 2))(in_features=6, out_features=3,
 <a href="https://matplotlib.org/stable/api/_as_gen/matplotlib.pyplot.show.html#matplotlib.pyplot.show" title="matplotlib.pyplot.show" class="sphx-glr-backref-module-matplotlib-pyplot sphx-glr-backref-type-py-function"><span class="n">plt</span><span class="o">.</span><span class="n">show</span></a><span class="p">()</span>
 </pre></div>
 </div>
-<img src="../_images/sphx_glr_plot_growing_container_tutorial_001.png" srcset="../_images/sphx_glr_plot_growing_container_tutorial_001.png" alt="Model Performance and Capacity Evolution" class = "sphx-glr-single-img"/><p class="sphx-glr-timing"><strong>Total running time of the script:</strong> (0 minutes 1.571 seconds)</p>
+<img src="../_images/sphx_glr_plot_growing_container_tutorial_001.png" srcset="../_images/sphx_glr_plot_growing_container_tutorial_001.png" alt="Model Performance and Capacity Evolution" class = "sphx-glr-single-img"/><p class="sphx-glr-timing"><strong>Total running time of the script:</strong> (0 minutes 1.759 seconds)</p>
 <div class="sphx-glr-footer sphx-glr-footer-example docutils container" id="sphx-glr-download-auto-examples-plot-growing-container-tutorial-py">
 <div class="sphx-glr-download sphx-glr-download-jupyter docutils container">
 <p><a class="reference download internal" download="" href="../_downloads/8a90e3a12e6c28e6701ab553191db473/plot_growing_container_tutorial.ipynb"><code class="xref download docutils literal notranslate"><span class="pre">Download</span> <span class="pre">Jupyter</span> <span class="pre">notebook:</span> <span class="pre">plot_growing_container_tutorial.ipynb</span></code></a></p>
@@ -911,6 +924,9 @@ LinearGrowingModule(LinearGrowingModule(Layer 2))(in_features=6, out_features=3,
 </div>
 </div>
 <p class="sphx-glr-signature"><a class="reference external" href="https://sphinx-gallery.github.io">Gallery generated by Sphinx-Gallery</a></p>
+</section>
+</section>
+</section>
 </section>
 
 
@@ -933,11 +949,11 @@ LinearGrowingModule(LinearGrowingModule(Layer 2))(in_features=6, out_features=3,
       </div>
     </a>
     <a class="right-next"
-       href="plot_growing_network.html"
+       href="plot_growing_module_tutorial.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Simple Growing Container Example</p>
+        <p class="prev-next-title">GroMo tutorial</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -960,16 +976,20 @@ LinearGrowingModule(LinearGrowingModule(Layer 2))(in_features=6, out_features=3,
   </div>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
-<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#">GrowingContainer tutorial</a><ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-is-gromo">What is GroMo?</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#tutorial-overview">Tutorial Overview</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#step-1-environment-setup-and-imports">Step 1: Environment Setup and Imports</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#step-2-define-the-data-loaders">Step 2: Define the data loaders</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#step-2-define-the-data-loaders">Step 2: Define the data loaders</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#evaluation-function">3.2 Evaluation Function</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#growth-function">3.3 Growth Function</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#step-4-create-the-initial-model">Step 4: Create the Initial Model</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#step-5-training-loop-with-growth">Step 5: Training Loop with Growth</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#step-6-visualize-training-progress">Step 6: Visualize Training Progress</a></li>
 </ul>
 </li>
-<li class="toc-h1 nav-item toc-entry"><a class="reference internal nav-link" href="#defining-the-growingmlp-architecture">Defining the GrowingMLP Architecture</a></li>
 </ul>
-
+</li>
+</ul>
   </nav></div>
 
 </div></div>
