@@ -1,3 +1,4 @@
+import logging
 from warnings import warn
 
 import torch
@@ -27,6 +28,7 @@ def sqrt_inverse_matrix_semi_positive(
     torch.Tensor
         square root of the inverse of the input matrix
     """
+    logger = logging.getLogger(__name__)
     assert matrix.shape[0] == matrix.shape[1], "The input matrix must be square."
     assert torch.allclose(matrix, matrix.t()), "The input matrix must be symmetric."
     assert torch.isnan(matrix).sum() == 0, "The input matrix must not contain NaN values."
@@ -36,13 +38,33 @@ def sqrt_inverse_matrix_semi_positive(
     try:
         eigenvalues, eigenvectors = torch.linalg.eigh(matrix)
     except torch.linalg.LinAlgError as e:
-        if preferred_linalg_library == "cusolver":
-            raise ValueError(
-                "This is probably a bug from CUDA < 12.1"
-                "Try torch.backends.cuda.preferred_linalg_library('magma')"
-            )
-        else:
+        # Get the current linalg library being used
+        current_library = torch.backends.cuda.preferred_linalg_library()
+        # "Magma", "Cusolver", or "Default"
+        library_name = current_library.name  # type: ignore
+
+        if library_name == "Magma":
+            # If already using magma, re-raise the original exception
             raise e
+        elif library_name in ("Cusolver", "Default"):
+            # Switch to magma and retry the computation
+            logger.warning(
+                f"torch.linalg.eigh failed with {library_name} backend. "
+                f"Indeed, cusolver with CUDA versions < 12.1 may fails for "
+                "non-positive definite matrix. Retrying with magma backend."
+            )
+            torch.backends.cuda.preferred_linalg_library("magma")
+            try:
+                eigenvalues, eigenvectors = torch.linalg.eigh(matrix)
+            finally:
+                # Reset to the previously used library
+                torch.backends.cuda.preferred_linalg_library(current_library)
+        else:
+            # Unknown library - crash with informative error
+            raise RuntimeError(
+                f"Unknown CUDA linalg library: {library_name}. "
+                "Expected 'Magma', 'Cusolver', or 'Default'."
+            ) from e
     selected_eigenvalues = eigenvalues > threshold
     eigenvalues = torch.rsqrt(eigenvalues[selected_eigenvalues])  # inverse square root
     eigenvectors = eigenvectors[:, selected_eigenvalues]
@@ -425,3 +447,70 @@ def apply_border_effect_on_unfolded(
     unfolded_tensor = unfolded_tensor.flatten(start_dim=2)
 
     return unfolded_tensor
+
+
+if __name__ == "__main__":
+    import logging
+
+    logging.basicConfig(level=logging.DEBUG)
+
+    print("=" * 60)
+    print("Testing sqrt_inverse_matrix_semi_positive exception handling")
+    print("=" * 60)
+
+    # Create a valid positive definite matrix for testing
+    A = torch.randn(5, 5)
+    valid_matrix = A @ A.t() + torch.eye(5) * 0.1
+
+    print("\n1. Testing with a valid matrix (should succeed):")
+    try:
+        result = sqrt_inverse_matrix_semi_positive(valid_matrix)
+        print(f"   Success! Result shape: {result.shape}")
+    except Exception as e:
+        print(f"   Failed unexpectedly: {e}")
+
+    print("\n2. Testing library detection mechanism:")
+    # Save original library
+    original_lib = torch.backends.cuda.preferred_linalg_library()
+    print(f"   Original library: {original_lib.name}")
+
+    # Test with cusolver
+    torch.backends.cuda.preferred_linalg_library("cusolver")
+    current = torch.backends.cuda.preferred_linalg_library()
+    print(f"   After setting to cusolver: {current.name}")
+
+    # Test with magma
+    torch.backends.cuda.preferred_linalg_library("magma")
+    current = torch.backends.cuda.preferred_linalg_library()
+    print(f"   After setting to magma: {current.name}")
+
+    # Test with default
+    torch.backends.cuda.preferred_linalg_library("default")
+    current = torch.backends.cuda.preferred_linalg_library()
+    print(f"   After setting to default: {current.name}")
+
+    # Restore original
+    torch.backends.cuda.preferred_linalg_library(original_lib)
+    print(
+        f"   Restored to original: {torch.backends.cuda.preferred_linalg_library().name}"
+    )
+
+    print("\n3. Testing with different library preferences:")
+    for lib in ["default", "cusolver", "magma"]:
+        torch.backends.cuda.preferred_linalg_library(lib)
+        print(f"\n   Testing with {lib} backend:")
+        try:
+            result = sqrt_inverse_matrix_semi_positive(valid_matrix)
+            print(f"   Success! Result shape: {result.shape}")
+        except Exception as e:
+            print(f"   Error: {type(e).__name__}: {e}")
+
+    # Restore to default
+    torch.backends.cuda.preferred_linalg_library("default")
+    print(
+        f"\n   Final library setting: {torch.backends.cuda.preferred_linalg_library().name}"
+    )
+
+    print("\n" + "=" * 60)
+    print("Tests completed!")
+    print("=" * 60)
