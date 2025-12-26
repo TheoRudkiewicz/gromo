@@ -56,6 +56,14 @@ def sqrt_inverse_matrix_semi_positive(
             torch.backends.cuda.preferred_linalg_library("magma")
             try:
                 eigenvalues, eigenvectors = torch.linalg.eigh(matrix)
+            except RuntimeError:
+                logger.error(
+                    "torch.linalg.eigh failed with magma backend on GPU. Retrying on CPU."
+                )
+                matrix_cpu = matrix.cpu()
+                eigenvalues, eigenvectors = torch.linalg.eigh(matrix_cpu)
+                eigenvalues = eigenvalues.to(matrix.device)
+                eigenvectors = eigenvectors.to(matrix.device)
             finally:
                 # Reset to the previously used library
                 torch.backends.cuda.preferred_linalg_library(current_library)
