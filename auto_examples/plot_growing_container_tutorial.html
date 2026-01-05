@@ -446,15 +446,21 @@ generalized to other structures like a ResNet, a MLP Mixer, etc.</p>
 <span class="p">)</span>
 </pre></div>
 </div>
-<dl>
-<dt>Defining the GrowingMLP Architecture</dt><dd><p>Before we use <code class="docutils literal notranslate"><span class="pre">GrowingMLP</span></code>, let’s look at its
+<section id="defining-the-growingmlp-architecture">
+<h3>Defining the GrowingMLP Architecture<a class="headerlink" href="#defining-the-growingmlp-architecture" title="Link to this heading">#</a></h3>
+<p>Before we use <code class="docutils literal notranslate"><span class="pre">GrowingMLP</span></code>, let’s look at its
 <a class="reference external" href="https://github.com/growingnet/gromo/blob/main/src/gromo/containers/growing_mlp.py">implementation</a>
 to understand how it works.</p>
+<section id="key-components">
+<h4>Key Components<a class="headerlink" href="#key-components" title="Link to this heading">#</a></h4>
 <ul class="simple">
 <li><p><strong>LinearGrowingModule</strong>: A special linear layer that supports dynamic
 growth. Each layer can have neurons added to it during training.</p></li>
 <li><p><strong>GrowingContainer</strong>: The base class that provides the growth infrastructure</p></li>
 </ul>
+</section>
+<section id="important-methods">
+<h4>Important Methods<a class="headerlink" href="#important-methods" title="Link to this heading">#</a></h4>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Method</p></th>
@@ -480,13 +486,21 @@ new neurons</p></td>
 </tbody>
 </table>
 </div>
-</dd>
-</dl>
-<blockquote>
-<div><p>We need three key functions to work with our growing network:</p>
+</section>
+</section>
+</section>
+<section id="step-3-define-helper-functions">
+<h2>Step 3: Define Helper Functions<a class="headerlink" href="#step-3-define-helper-functions" title="Link to this heading">#</a></h2>
+<p>We need three key functions to work with our growing network:</p>
+<ol class="arabic simple">
+<li><p><strong>Training function</strong>: Standard training loop using SGD</p></li>
+<li><p><strong>Evaluation function</strong>: Compute loss, with support for extended mode</p></li>
+<li><p><strong>Growth function</strong>: The core GroMo logic to add new neurons intelligently</p></li>
+</ol>
+<section id="training-function">
+<h3>3.1 Training Function<a class="headerlink" href="#training-function" title="Link to this heading">#</a></h3>
 <p>A standard PyTorch training loop that performs one epoch of training using
 SGD optimizer with MSE loss.</p>
-</div></blockquote>
 <div class="highlight-Python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">train</span><span class="p">(</span>
     <span class="n">model</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">Module</span><span class="p">,</span>
     <span class="n">device</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span><span class="p">,</span>
@@ -517,6 +531,7 @@ SGD optimizer with MSE loss.</p>
         <span class="n">optimizer</span><span class="o">.</span><a href="https://docs.python.org/3/library/functions.html#int" title="builtins.int" class="sphx-glr-backref-module-builtins sphx-glr-backref-type-py-class sphx-glr-backref-instance"><span class="n">step</span></a><span class="p">()</span>
 </pre></div>
 </div>
+</section>
 <section id="evaluation-function">
 <h3>3.2 Evaluation Function<a class="headerlink" href="#evaluation-function" title="Link to this heading">#</a></h3>
 <p>The evaluation function computes the loss on a dataset. It supports two
@@ -911,7 +926,7 @@ LinearGrowingModule(LinearGrowingModule(Layer 2))(in_features=6, out_features=3,
 <a href="https://matplotlib.org/stable/api/_as_gen/matplotlib.pyplot.show.html#matplotlib.pyplot.show" title="matplotlib.pyplot.show" class="sphx-glr-backref-module-matplotlib-pyplot sphx-glr-backref-type-py-function"><span class="n">plt</span><span class="o">.</span><span class="n">show</span></a><span class="p">()</span>
 </pre></div>
 </div>
-<img src="../_images/sphx_glr_plot_growing_container_tutorial_001.png" srcset="../_images/sphx_glr_plot_growing_container_tutorial_001.png" alt="Model Performance and Capacity Evolution" class = "sphx-glr-single-img"/><p class="sphx-glr-timing"><strong>Total running time of the script:</strong> (0 minutes 1.759 seconds)</p>
+<img src="../_images/sphx_glr_plot_growing_container_tutorial_001.png" srcset="../_images/sphx_glr_plot_growing_container_tutorial_001.png" alt="Model Performance and Capacity Evolution" class = "sphx-glr-single-img"/><p class="sphx-glr-timing"><strong>Total running time of the script:</strong> (0 minutes 1.678 seconds)</p>
 <div class="sphx-glr-footer sphx-glr-footer-example docutils container" id="sphx-glr-download-auto-examples-plot-growing-container-tutorial-py">
 <div class="sphx-glr-download sphx-glr-download-jupyter docutils container">
 <p><a class="reference download internal" download="" href="../_downloads/8a90e3a12e6c28e6701ab553191db473/plot_growing_container_tutorial.ipynb"><code class="xref download docutils literal notranslate"><span class="pre">Download</span> <span class="pre">Jupyter</span> <span class="pre">notebook:</span> <span class="pre">plot_growing_container_tutorial.ipynb</span></code></a></p>
@@ -980,6 +995,15 @@ LinearGrowingModule(LinearGrowingModule(Layer 2))(in_features=6, out_features=3,
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#tutorial-overview">Tutorial Overview</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#step-1-environment-setup-and-imports">Step 1: Environment Setup and Imports</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#step-2-define-the-data-loaders">Step 2: Define the data loaders</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#defining-the-growingmlp-architecture">Defining the GrowingMLP Architecture</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#key-components">Key Components</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#important-methods">Important Methods</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#step-3-define-helper-functions">Step 3: Define Helper Functions</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#training-function">3.1 Training Function</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#evaluation-function">3.2 Evaluation Function</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#growth-function">3.3 Growth Function</a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#step-4-create-the-initial-model">Step 4: Create the Initial Model</a></li>
@@ -1017,7 +1041,7 @@ LinearGrowingModule(LinearGrowingModule(Layer 2))(in_features=6, out_features=3,
 
   <p class="copyright">
     
-      © Copyright 2024-2025 GroMo contributors.
+      © Copyright 2024-2026 GroMo contributors.
       <br/>
     
   </p>
