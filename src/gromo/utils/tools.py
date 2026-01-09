@@ -7,7 +7,6 @@ import torch
 def sqrt_inverse_matrix_semi_positive(
     matrix: torch.Tensor,
     threshold: float = 1e-5,
-    preferred_linalg_library: None | str = None,
 ) -> torch.Tensor:
     """
     Compute the square root of the inverse of a semi-positive definite matrix.
@@ -33,46 +32,15 @@ def sqrt_inverse_matrix_semi_positive(
     assert torch.allclose(matrix, matrix.t()), "The input matrix must be symmetric."
     assert torch.isnan(matrix).sum() == 0, "The input matrix must not contain NaN values."
 
-    if preferred_linalg_library is not None:
-        torch.backends.cuda.preferred_linalg_library(preferred_linalg_library)
     try:
         eigenvalues, eigenvectors = torch.linalg.eigh(matrix)
-    except torch.linalg.LinAlgError as e:
-        # Get the current linalg library being used
-        current_library = torch.backends.cuda.preferred_linalg_library()
-        # "Magma", "Cusolver", or "Default"
-        library_name = current_library.name  # type: ignore
+    except torch.linalg.LinAlgError:
+        matrix += 1e-6 * torch.eye(matrix.shape[0], device=matrix.device)
+        logger.warning(
+            "Adding a small identity matrix to make the input matrix positive definite."
+        )
+        eigenvalues, eigenvectors = torch.linalg.eigh(matrix)
 
-        if library_name == "Magma":
-            # If already using magma, re-raise the original exception
-            raise e
-        elif library_name in ("Cusolver", "Default"):
-            # Switch to magma and retry the computation
-            logger.warning(
-                f"torch.linalg.eigh failed with {library_name} backend. "
-                f"Indeed, cusolver with CUDA versions < 12.1 may fails for "
-                "non-positive definite matrix. Retrying with magma backend."
-            )
-            torch.backends.cuda.preferred_linalg_library("magma")
-            try:
-                eigenvalues, eigenvectors = torch.linalg.eigh(matrix)
-            except RuntimeError:
-                logger.error(
-                    "torch.linalg.eigh failed with magma backend on GPU. Retrying on CPU."
-                )
-                matrix_cpu = matrix.cpu()
-                eigenvalues, eigenvectors = torch.linalg.eigh(matrix_cpu)
-                eigenvalues = eigenvalues.to(matrix.device)
-                eigenvectors = eigenvectors.to(matrix.device)
-            finally:
-                # Reset to the previously used library
-                torch.backends.cuda.preferred_linalg_library(current_library)
-        else:
-            # Unknown library - crash with informative error
-            raise RuntimeError(
-                f"Unknown CUDA linalg library: {library_name}. "
-                "Expected 'Magma', 'Cusolver', or 'Default'."
-            ) from e
     selected_eigenvalues = eigenvalues > threshold
     eigenvalues = torch.rsqrt(eigenvalues[selected_eigenvalues])  # inverse square root
     eigenvectors = eigenvectors[:, selected_eigenvalues]
