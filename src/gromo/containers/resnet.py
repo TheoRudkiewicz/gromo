@@ -82,6 +82,9 @@ class ResNetBasicBlock(SequentialGrowingModel):
         If True, adapt the network for small input images (e.g., CIFAR-10/100).
         This uses smaller kernels, no stride, and
         no max pooling in the initial layers.
+    skip_first_downsample : bool
+        If True, the first block of the second stage will not perform spatial
+        downsampling (stride=1 instead of 2).
     inplanes : int
         Number of initial planes (channels) after the first convolution.
         (Default is 64 as in standard ResNet architectures.)
@@ -114,6 +117,7 @@ class ResNetBasicBlock(SequentialGrowingModel):
         output_block_kernel_size: int = 3,
         hidden_channels: tuple[int, ...] = (0, 0, 0, 0),
         small_inputs: bool = False,
+        skip_first_downsample: bool = True,
         inplanes: int = 64,
         use_preactivation: bool = True,
         normalization: NormalizationType | None = "batch",
@@ -146,10 +150,8 @@ class ResNetBasicBlock(SequentialGrowingModel):
             output_channels = inplanes * (2**i)
             stage_hidden_channels = hidden_channels[i]
 
-            # For small inputs, adjust stride behavior
-            stage_stride = 2 if (i > 0 and not (small_inputs and i == 1)) else 1
-            if small_inputs and i == 1:
-                stage_stride = 1
+            # adjust stride behavior
+            stage_stride = 2 if (i > 0 and not (skip_first_downsample and i == 1)) else 1
 
             stage = nn.Sequential()
             block = self._create_block(
@@ -644,6 +646,7 @@ def init_full_resnet_structure(
     reduction_factor: float = 1 / 64,
     hidden_channels: tuple[int | tuple[int, ...], ...] | None = None,
     small_inputs: bool | None = None,
+    skip_first_downsample_for_small_inputs: bool = True,
     number_of_blocks_per_stage: int | tuple[int, ...] = 2,
     inplanes: int = 64,
     nb_stages: int = 4,
@@ -689,6 +692,8 @@ def init_full_resnet_structure(
     small_inputs : bool | None
         If True, adapt the network for small input images (e.g., CIFAR-10/100).
         This uses smaller kernels, no stride, and no max pooling in the initial layers.
+    skip_first_downsample_for_small_inputs : bool
+        If True, skip the first downsampling operation of the second stage when small_inputs is True.
     number_of_blocks_per_stage : int | tuple[int, ...]
         Number of basic blocks per stage. If an integer is provided, the same number
         of blocks will be used for all stages. If a tuple is provided, it should
@@ -801,6 +806,7 @@ def init_full_resnet_structure(
         output_block_kernel_size=output_block_kernel_size,
         hidden_channels=initial_hidden_channels,
         small_inputs=small_inputs,
+        skip_first_downsample=skip_first_downsample_for_small_inputs and small_inputs,
         inplanes=inplanes,
         use_preactivation=use_preactivation,
         normalization=normalization,
@@ -892,3 +898,19 @@ if __name__ == "__main__":
         ]
         print(f"  Stage {i}: {block_hidden}")
     summary(model_custom, input_size=(1, 3, 224, 224))
+
+    resnet20 = init_full_resnet_structure(
+        input_shape=(3, 32, 32),
+        out_features=10,
+        reduction_factor=1,
+        number_of_blocks_per_stage=3,
+        nb_stages=3,
+        inplanes=16,
+        use_preactivation=False,
+        skip_first_downsample_for_small_inputs=False,  # ResNet-20 for CIFAR-10 does not skip the first downsample
+    )
+    print("\n" + "=" * 60)
+    print("ResNet-20 for CIFAR-10")
+    print("=" * 60)
+    print(resnet20)
+    summary(resnet20, input_size=(1, 3, 32, 32))
