@@ -239,7 +239,7 @@ def gradient_descent(
     model: nn.Module,
     train_dataloader: torch.utils.data.DataLoader,
     optimizer: torch.optim.Optimizer,
-    scheduler: Any | None,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None,
     loss_function: nn.Module,
     metrics: Metric | None = None,
     batch_limit: int | None = None,
@@ -307,15 +307,13 @@ def gradient_descent(
 
         loss.backward()
         optimizer.step()
-        if scheduler is not None:
-            scheduler.step()
 
         # update metrics
         loss_meter.update(loss.detach(), x.size(0))
         metrics.update(y_pred.detach(), y)
 
-    if scheduler is not None and hasattr(scheduler, "epoch_step"):
-        scheduler.epoch_step()
+    if scheduler is not None:
+        scheduler.step()
 
     return loss_meter.compute().item(), metrics.compute().item()
 
