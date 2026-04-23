@@ -3419,12 +3419,11 @@ class GrowingModule(torch.nn.Module):
 
         # Step 1: Rescaling (before extensions, so copy_uniform reads
         # rescaled weights as reference)
-        if rescaling is not None:
-            self.apply_rescaling(
-                rescaling=rescaling,
-                neuron_pairing=neuron_pairing,
-                extension_size=input_extension_size,
-            )
+        self.apply_rescaling(
+            rescaling=rescaling,
+            neuron_pairing=neuron_pairing,
+            extension_size=input_extension_size,
+        )
 
         # Step 2: Create extension layers
         self.previous_module.create_layer_out_extension(output_extension_size)
@@ -3478,11 +3477,10 @@ class GrowingModule(torch.nn.Module):
             init_fn(layer_to_init.bias, self.previous_module.bias, prev_fan_in)
 
         # Step 4: Neuron pairing (after init)
-        if neuron_pairing is not None:
-            self.apply_neuron_pairing(
-                neuron_pairing=neuron_pairing,
-                noise_ratio=noise_ratio,
-            )
+        self.apply_neuron_pairing(
+            neuron_pairing=neuron_pairing,
+            noise_ratio=noise_ratio,
+        )
 
     def missing_neurons(self) -> int:
         """
