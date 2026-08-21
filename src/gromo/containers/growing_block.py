@@ -348,14 +348,21 @@ class GrowingBlock(GrowingContainer):
             self.second_layer.tensor_s.init()
             self.second_layer.tensor_m.init()
 
-    def update_computation(self):
+    def update_computation(self, update_covariance_loss_gradient: bool = True):
         """
         Update the computation of the block.
+
+        Parameters
+        ----------
+        update_covariance_loss_gradient: bool
+            if False, skip the gradient-covariance statistic (see
+            GrowingModule.update_computation).
         """
         # growth part
         self.second_layer.tensor_m_prev.update()
         self.second_layer.tensor_s_growth.update()
-        self.second_layer.covariance_loss_gradient.update()
+        if update_covariance_loss_gradient:
+            self.second_layer.covariance_loss_gradient.update()
 
         if self.hidden_neurons > 0:
             self.second_layer.cross_covariance.update()
@@ -363,6 +370,15 @@ class GrowingBlock(GrowingContainer):
             # natural gradient part
             self.second_layer.tensor_m.update()
             self.second_layer.tensor_s.update()
+
+    def update_covariance_loss_gradient(self, count_samples: bool = True) -> None:
+        """Update only the gradient-covariance statistic of the second layer."""
+        self.second_layer.update_covariance_loss_gradient(count_samples=count_samples)
+
+    def clear_pre_activity_grad(self) -> None:
+        """Clear retained pre-activity gradients of the block's layers."""
+        self.first_layer.clear_pre_activity_grad()
+        self.second_layer.clear_pre_activity_grad()
 
     def reset_computation(self):
         """
@@ -407,6 +423,7 @@ class GrowingBlock(GrowingContainer):
         use_projection: bool = True,
         ignore_singular_values: bool = False,
         use_fisher: bool = False,
+        fisher_shrinkage: float = 0.0,
     ) -> None:
         """
         Compute the optimal update for second layer and additional neurons.
@@ -446,6 +463,10 @@ class GrowingBlock(GrowingContainer):
         use_fisher: bool
             If True, use the empirical Fisher / gradient covariance as
             preconditioner on the output side. Default is False.
+        fisher_shrinkage: float
+            Shrinkage intensity alpha in [0, 1]. If > 0, shrink the gradient
+            covariance E to (1 - alpha) * E + alpha * tr(E)/d * I and whiten it
+            without truncation. Default is 0.0 (absolute-threshold behaviour).
 
         Note
         ----
@@ -491,6 +512,7 @@ class GrowingBlock(GrowingContainer):
                 use_projection=False,  # Must be False when hidden_neurons == 0
                 ignore_singular_values=ignore_singular_values,
                 use_fisher=use_fisher,
+                fisher_shrinkage=fisher_shrinkage,
             )
         else:
             # When hidden_neurons > 0, delegate to second layer's
@@ -509,6 +531,7 @@ class GrowingBlock(GrowingContainer):
                 use_projection=use_projection,
                 ignore_singular_values=ignore_singular_values,
                 use_fisher=use_fisher,
+                fisher_shrinkage=fisher_shrinkage,
             )
 
     def apply_change(

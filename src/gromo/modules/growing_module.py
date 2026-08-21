@@ -22,6 +22,32 @@ from gromo.utils.utils import (
 GRADIENT_COMPUTATION_EPSILON = 1e-5  # Small perturbation for gradient computation
 
 
+def _shrink_psd_matrix(matrix: torch.Tensor, shrinkage: float) -> torch.Tensor:
+    """Ledoit-Wolf-style ridge shrinkage of a positive semi-definite matrix.
+
+    Replaces M by the convex combination (1 - alpha) * M + alpha * tr(M)/d * I,
+    which keeps M positive definite (hence invertible/full-rank) even when its
+    empirical spectrum sits at or below the usual whitening threshold.
+
+    Parameters
+    ----------
+    matrix: torch.Tensor
+        positive semi-definite matrix M, of shape (d, d)
+    shrinkage: float
+        shrinkage intensity alpha in [0, 1]
+
+    Returns
+    -------
+    torch.Tensor
+        the shrunk matrix M
+    """
+    assert 0.0 <= shrinkage <= 1.0, f"shrinkage must be in [0, 1], got {shrinkage}"
+    d = matrix.shape[0]
+    return (1 - shrinkage) * matrix + shrinkage * (matrix.trace() / d) * torch.eye(
+        d, device=matrix.device, dtype=matrix.dtype
+    )
+
+
 class MergeGrowingModule(torch.nn.Module):
     """
     Module to connect multiple modules with an merge operation.
@@ -366,15 +392,37 @@ class MergeGrowingModule(torch.nn.Module):
         if self.previous_tensor_m is not None:
             self.previous_tensor_m.init()
 
-    def update_computation(self) -> None:
+    def update_computation(
+        self,
+        update_covariance_loss_gradient: bool = True,  # noqa: ARG002
+    ) -> None:
         """
         Update the computation of the optimal added parameters.
+
+        Parameters
+        ----------
+        update_covariance_loss_gradient: bool
+            accepted for interface compatibility; merge modules have no
+            gradient-covariance statistic.
         """
         self.tensor_s.update()
         if self.previous_tensor_s is not None:
             self.previous_tensor_s.update()
         if self.previous_tensor_m is not None:
             self.previous_tensor_m.update()
+
+    def update_covariance_loss_gradient(self, count_samples: bool = True) -> None:
+        """No-op: merge modules have no gradient-covariance statistic."""
+
+    def clear_pre_activity_grad(self) -> None:
+        """Clear the retained gradient of the stored input (this module's pre-activity).
+
+        ``forward`` calls ``self.input.retain_grad()`` whenever ``store_input``
+        is set, so — unlike a plain ``GrowingModule`` — the merge node's own
+        input tensor is where the gradient accumulates across backward passes.
+        """
+        if self.input is not None and self.input.grad is not None:
+            self.input.grad = None
 
     def reset_computation(self) -> None:
         """
@@ -2192,6 +2240,7 @@ class GrowingModule(torch.nn.Module):
         dtype: torch.dtype = torch.float32,
         force_pseudo_inverse: bool = False,
         use_fisher: bool = False,
+        fisher_shrinkage: float = 0.0,
     ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | float]:
         r"""
         Compute the optimal delta for the layer using current S and M tensors.
@@ -2220,6 +2269,12 @@ class GrowingModule(torch.nn.Module):
             if True, use the empirical Fisher / gradient covariance as a left
             preconditioner. Relies on the independence hypothesis from the math
             notes (`@hyp:independence`).
+        fisher_shrinkage: float
+            Shrinkage intensity alpha in [0, 1]. If > 0, shrink the gradient
+            covariance E to (1 - alpha) * E + alpha * tr(E)/d * I before using
+            it as a preconditioner, so a near-singular E does not force the
+            pseudo-inverse fallback below. Only has an effect when
+            ``use_fisher`` is True.
 
         Returns
         -------
@@ -2232,6 +2287,10 @@ class GrowingModule(torch.nn.Module):
         tensor_covariance_loss_gradient = (
             self.covariance_loss_gradient() if use_fisher else None
         )
+        if tensor_covariance_loss_gradient is not None and fisher_shrinkage > 0:
+            tensor_covariance_loss_gradient = _shrink_psd_matrix(
+                tensor_covariance_loss_gradient, fisher_shrinkage
+            )
 
         self.delta_raw, parameter_update_decrease = optimal_delta(
             tensor_s,
@@ -2267,6 +2326,7 @@ class GrowingModule(torch.nn.Module):
         use_projection: bool = True,
         ignore_singular_values: bool = False,
         use_fisher: bool = False,
+        fisher_shrinkage: float = 0.0,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Auxiliary function to compute the optimal added parameters (alpha, omega, k)
@@ -2298,6 +2358,12 @@ class GrowingModule(torch.nn.Module):
         use_fisher: bool
             if True, use the covariance of the loss gradient as an additional
             preconditioner when computing the neuron extension
+        fisher_shrinkage: float
+            shrinkage intensity alpha in [0, 1]. If > 0, replace E by the
+            Ledoit-Wolf-style convex combination
+            (1 - alpha) * E + alpha * tr(E)/d * I and whiten it without
+            truncation. Avoids the absolute-threshold rank collapse of E when
+            the gradient covariance spectrum sits near the numerical threshold.
 
         Returns
         -------
@@ -2329,6 +2395,11 @@ class GrowingModule(torch.nn.Module):
         if matrix_e is not None and matrix_e.dtype != dtype:
             matrix_e = matrix_e.to(dtype=dtype)
 
+        e_numerical_threshold: float | None = None
+        if matrix_e is not None and fisher_shrinkage > 0:
+            matrix_e = _shrink_psd_matrix(matrix_e, fisher_shrinkage)
+            e_numerical_threshold = 0.0
+
         # Call tools function with primitive options
         alpha, omega, eigenvalues_extension = compute_optimal_added_parameters(
             matrix_s=matrix_s,
@@ -2340,6 +2411,7 @@ class GrowingModule(torch.nn.Module):
             omega_zero=omega_zero,
             ignore_singular_values=ignore_singular_values,
             matrix_covariance_loss_gradient=matrix_e,
+            e_numerical_threshold=e_numerical_threshold,
         )
 
         alpha = alpha.to(dtype=saved_dtype)
@@ -2365,6 +2437,7 @@ class GrowingModule(torch.nn.Module):
         use_projection: bool = True,
         ignore_singular_values: bool = False,
         use_fisher: bool = False,
+        fisher_shrinkage: float = 0.0,
     ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor, torch.Tensor]:
         """
         Compute the optimal added parameters to extend the input layer.
@@ -2399,6 +2472,11 @@ class GrowingModule(torch.nn.Module):
         use_fisher: bool
             if True, use the covariance of the loss gradient as an additional
             preconditioner when computing the neuron extension
+        fisher_shrinkage: float
+            shrinkage intensity alpha in [0, 1]. If > 0, replace E by the
+            Ledoit-Wolf-style convex combination
+            (1 - alpha) * E + alpha * tr(E)/d * I and whiten it without
+            truncation. Only has an effect when ``use_fisher`` is True.
 
         Returns
         -------
@@ -2467,6 +2545,7 @@ class GrowingModule(torch.nn.Module):
         use_projection: bool = True,
         ignore_singular_values: bool = False,
         use_fisher: bool = False,
+        fisher_shrinkage: float = 0.0,
     ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
         """
         Compute the optimal update and additional neurons.
@@ -2527,6 +2606,10 @@ class GrowingModule(torch.nn.Module):
         use_fisher: bool
             Whether to use the covariance of the loss gradient as an additional
             preconditioner for delta and neuron-extension computations.
+        fisher_shrinkage: float
+            Shrinkage intensity alpha in [0, 1]. If > 0, shrink the gradient
+            covariance E to (1 - alpha) * E + alpha * tr(E)/d * I and whiten it
+            without truncation.
 
         Returns
         -------
@@ -2546,7 +2629,12 @@ class GrowingModule(torch.nn.Module):
         # - compute_delta=False/use_projection=False: no natural-gradient step,
         #   so set the corresponding first-order term to zero.
         if compute_delta:
-            self.compute_optimal_delta(update=True, dtype=dtype, use_fisher=use_fisher)
+            self.compute_optimal_delta(
+                update=True,
+                dtype=dtype,
+                use_fisher=use_fisher,
+                fisher_shrinkage=fisher_shrinkage,
+            )
         else:
             self.optimal_delta_layer = None
             self.parameter_update_decrease = torch.tensor(
@@ -2556,7 +2644,10 @@ class GrowingModule(torch.nn.Module):
             )
             if use_projection and self.previous_module is not None:
                 self.compute_optimal_delta(
-                    update=False, dtype=dtype, use_fisher=use_fisher
+                    update=False,
+                    dtype=dtype,
+                    use_fisher=use_fisher,
+                    fisher_shrinkage=fisher_shrinkage,
                 )
             else:
                 self.delta_raw = None
@@ -2581,6 +2672,7 @@ class GrowingModule(torch.nn.Module):
                 use_projection=use_projection,
                 ignore_singular_values=ignore_singular_values,
                 use_fisher=use_fisher,
+                fisher_shrinkage=fisher_shrinkage,
             )
             return alpha_weight, alpha_bias
         elif isinstance(self.previous_module, MergeGrowingModule):
@@ -2609,13 +2701,28 @@ class GrowingModule(torch.nn.Module):
         else:
             raise NotImplementedError
 
-    def update_computation(self) -> None:
+    def update_computation(self, update_covariance_loss_gradient: bool = True) -> None:
         """
         Update the computation of the optimal added parameters.
+
+        Parameters
+        ----------
+        update_covariance_loss_gradient: bool
+            if False, skip the gradient-covariance statistic. Used by
+            multi-backward accumulation schemes (e.g. the true Fisher) where
+            E is accumulated separately via update_covariance_loss_gradient
+            while S and M keep the real-label gradient.
+
+        Raises
+        ------
+        NotImplementedError
+            if the previous module is neither a GrowingModule nor a
+            MergeGrowingModule.
         """
         self.tensor_s.update()
         self.tensor_m.update()
-        self.covariance_loss_gradient.update()
+        if update_covariance_loss_gradient:
+            self.covariance_loss_gradient.update()
         if self.previous_module is None:
             return
         elif isinstance(self.previous_module, GrowingModule):
@@ -2626,6 +2733,46 @@ class GrowingModule(torch.nn.Module):
             self.previous_module.update_computation()
         else:
             raise NotImplementedError
+
+    def update_covariance_loss_gradient(self, count_samples: bool = True) -> None:
+        """
+        Update only the gradient-covariance statistic from the current
+        pre-activity gradient.
+
+        Building block for exact ('true') Fisher accumulation — see
+        GrowingContainer.accumulate_true_fisher_covariance for the full
+        protocol. Call ``clear_pre_activity_grad`` before each backward:
+        retained gradients accumulate across passes. This method bypasses the
+        once-per-forward update guard, so the caller must run a fresh
+        backward between calls — calling it twice on the same gradient
+        double-counts it.
+
+        Parameters
+        ----------
+        count_samples: bool
+            count the batch into the statistic's sample counter. Pass True on
+            the first accumulation pass of a batch and False on the others so
+            the passes average as one batch.
+        """
+        self.covariance_loss_gradient.updated = False
+        self.covariance_loss_gradient.update(count_samples=count_samples)
+
+    def clear_pre_activity_grad(self) -> None:
+        """
+        Clear the retained gradient of the stored pre-activity.
+
+        Retained gradients accumulate across backward passes on the same
+        graph; multi-backward schemes must clear them between passes. When
+        ``next_module`` is a ``MergeGrowingModule``, this module's own
+        ``_pre_activity`` is never populated (storage is delegated to the
+        merge node's input, see the ``pre_activity`` property); in that case
+        delegate the clearing to ``next_module``.
+        """
+        if self._internal_store_pre_activity:
+            if self._pre_activity is not None and self._pre_activity.grad is not None:
+                self._pre_activity.grad = None
+        elif self.next_module is not None:
+            self.next_module.clear_pre_activity_grad()
 
     def reset_computation(self) -> None:
         """
