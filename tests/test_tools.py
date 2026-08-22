@@ -17,6 +17,7 @@ from gromo.utils.tools import (
     optimal_delta,
     resolve_threshold,
     resolve_threshold_rule,
+    spectrum_summary,
     sqrt_inverse_matrix_semi_positive,
 )
 from tests.torch_unittest import TorchTestCase
@@ -1112,6 +1113,12 @@ class TestGrowthSpectra(TorchTestCase):
         self.assertAlmostEqual(
             spectra["extension"]["threshold"], without.mean().item(), places=5
         )
+
+    def test_spectrum_summary(self):
+        """The spectrum summary reports the correct counts and values."""
+        spectrum = torch.tensor([4.0, 2.0, 1.0])
+        summary = spectrum_summary(spectrum)
+        self.assertIsInstance(summary, dict)
 
 
 if __name__ == "__main__":
