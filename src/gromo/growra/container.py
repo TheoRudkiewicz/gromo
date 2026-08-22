@@ -15,16 +15,11 @@ Typical usage::
     # ... train model a few steps using model.growra_parameters() as optimizer params ...
 """
 
-from __future__ import annotations
-
-from typing import TYPE_CHECKING
+from collections.abc import Callable
+from types import UnionType
 
 import torch
 import torch.nn as nn
-
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
 
 from gromo.containers.sequential_growing_container import SequentialGrowingModel
 from gromo.growra.module import (
@@ -62,7 +57,7 @@ def _infer_features(model: nn.Module) -> tuple[int, int]:
     first: nn.Module | None = None
     last: nn.Module | None = None
     for m in model.modules():
-        if isinstance(m, _LinearLayerType + _Conv2dLayerType):
+        if isinstance(m, (_LinearLayerType, _Conv2dLayerType)):
             if first is None:
                 first = m
             last = m
@@ -82,7 +77,7 @@ def _matches_target(
     name: str,
     module: nn.Module,
     target_modules: list[str] | None,
-    target_types: tuple[type, ...],
+    target_types: UnionType,
 ) -> bool:
     """Check if a module matches the target criteria.
 
@@ -95,7 +90,7 @@ def _matches_target(
     target_modules : list[str] | None
         If provided, only modules whose name contains one of these strings are
         targeted. If None, all modules of target_types are targeted.
-    target_types : tuple[type, ...]
+    target_types : UnionType
         Layer types to match.
 
     Returns
@@ -131,7 +126,7 @@ def _inject_growra_inplace(
     target_modules : list[str] | None
         Name filter; ``None`` wraps all linear / conv layers.
     """
-    all_types = _LinearLayerType + _Conv2dLayerType
+    all_types: UnionType = _LinearLayerType | _Conv2dLayerType
     replacements: list[tuple[nn.Module, str, nn.Module]] = []
     wrapped_names: set[str] = set()
 
@@ -269,7 +264,7 @@ class GrowRAModel(SequentialGrowingModel):
         growra_mods: list[GrowRALinear | GrowRAConv2d] = [
             m for m in model.modules() if isinstance(m, _GrowRATypes)
         ]
-        self._growable_layers = growra_mods  # type: ignore[assignment]
+        self._growable_layers = growra_mods  # type: ignore
         self._growing_layers = []
         self.set_growing_layers(scheduling_method="all")
 
