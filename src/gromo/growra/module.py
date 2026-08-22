@@ -17,11 +17,9 @@ via the FOGRO pipeline (see :mod:`gromo.growra.container`).
     available but receive less testing in the GrowRA context.
 """
 
-from __future__ import annotations
-
 import copy
 import warnings
-from typing import TYPE_CHECKING
+from collections.abc import Callable
 
 import torch
 import torch.nn as nn
@@ -33,14 +31,10 @@ from gromo.modules.growing_module import SupportsExtendedForward
 from gromo.modules.linear_growing_module import LinearGrowingModule
 
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
-
-
 # Types accepted as the "original layer" for linear GrowRA
-_LinearLayerType = (nn.Linear, LinearGrowingModule)
+_LinearLayerType = nn.Linear | LinearGrowingModule
 # Types accepted as the "original layer" for conv GrowRA
-_Conv2dLayerType = (nn.Conv2d, Conv2dGrowingModule)
+_Conv2dLayerType = nn.Conv2d | Conv2dGrowingModule
 
 
 class Scaling(nn.Module, SupportsExtendedForward):
