@@ -10,6 +10,7 @@ Tests cover:
 """
 
 import copy
+import math
 import unittest
 from typing import NamedTuple
 from unittest import TestCase
@@ -23,7 +24,15 @@ from gromo.growra.container import (
     get_growra_model,
     get_growra_modules,
 )
-from gromo.growra.module import GrowRAConv2d, GrowRALinear, Scaling
+from gromo.growra.module import (
+    DEFAULT_GAIN,
+    LR_INIT,
+    FactorScaling,
+    GrowRAConv2d,
+    GrowRALinear,
+    GrowRANormalization,
+    Scaling,
+)
 from gromo.modules.conv2d_growing_module import Conv2dGrowingModule
 from gromo.modules.linear_growing_module import LinearGrowingModule
 from gromo.utils.utils import global_device
@@ -499,7 +508,7 @@ class TestFOGROGrowthPipeline(TestCase):
         lora.reset_computation()
 
     def test_apply_change_no_extension(self):
-        """apply_change(apply_extension=False) skips _normalize_new_ranks."""
+        """apply_change(apply_extension=False) skips the normalization."""
         lora = self._make_lora(rank=0)
         lora.init_computation()
         x = _randn(self.batch_size, self.in_features)
@@ -522,13 +531,13 @@ class TestFOGROGrowthPipeline(TestCase):
         self.assertEqual(lora.rank, rank_before)
         lora.reset_computation()
 
-    def test_normalize_new_ranks_noop_without_growth(self):
-        """_normalize_new_ranks is a no-op when nothing is pending."""
+    def test_normalization_noop_without_growth(self):
+        """Normalizing is a no-op when nothing is pending."""
         lora = self._make_lora(rank=2)
         self.assertFalse(lora._has_pending_extensions())
         a_before = lora.first_layer.weight.clone()
         b_before = lora.second_layer.weight.clone()
-        lora._normalize_new_ranks()
+        lora.normalize_optimal_updates(normalization_type="growra")
         self.assertTrue(torch.equal(lora.first_layer.weight, a_before))
         self.assertTrue(torch.equal(lora.second_layer.weight, b_before))
 
@@ -928,7 +937,7 @@ class TestGrowingGrowraConv2dFOGRO(TestCase):
         self.assertEqual(out.shape, (2, 8, 8, 8))
 
     def test_apply_change_no_extension(self):
-        """apply_change(apply_extension=False) skips _normalize_new_ranks."""
+        """apply_change(apply_extension=False) skips the normalization."""
         conv = _conv2d(3, 8, kernel_size=3, padding=1)
         lora = GrowRAConv2d(conv, rank=0)
         lora.init_computation()
@@ -951,14 +960,14 @@ class TestGrowingGrowraConv2dFOGRO(TestCase):
         self.assertEqual(lora.rank, rank_before)
         lora.reset_computation()
 
-    def test_normalize_new_ranks_noop_without_growth(self):
-        """_normalize_new_ranks is a no-op when nothing is pending."""
+    def test_normalization_noop_without_growth(self):
+        """Normalizing is a no-op when nothing is pending."""
         conv = _conv2d(3, 8, kernel_size=3, padding=1)
         lora = GrowRAConv2d(conv, rank=2)
         self.assertFalse(lora._has_pending_extensions())
         a_before = lora.first_layer.weight.clone()
         b_before = lora.second_layer.weight.clone()
-        lora._normalize_new_ranks()
+        lora.normalize_optimal_updates(normalization_type="growra")
         self.assertTrue(torch.equal(lora.first_layer.weight, a_before))
         self.assertTrue(torch.equal(lora.second_layer.weight, b_before))
 
@@ -2286,7 +2295,7 @@ class _Case(NamedTuple):
 class TestGrowRANormalizationTargets(TorchTestCase):
     """Pin the numerical result of the GrowRA paper Section A.5 rescale.
 
-    ``_normalize_new_ranks`` rescales each new A row to unit norm and each new
+    The ``"growra"`` strategy rescales each new A row to unit norm and each new
     B column to ``sqrt(fan_out * lr_init)``.  Nothing asserted this before;
     these tests exist so the planned pre-merge refactor of that rescale has a
     numerical contract to preserve.
@@ -2559,7 +2568,7 @@ class TestGrowRANormalizationTargets(TorchTestCase):
                     a_ext[zero_a].zero_()
                     b_ext[:, zero_b].zero_()
 
-                block._normalize_new_ranks()
+                block.normalize_optimal_updates(normalization_type="growra")
 
                 a_norms = _rank_norms(a_ext, rank_dim=0)
                 b_norms = _rank_norms(b_ext, rank_dim=1)
@@ -2656,9 +2665,15 @@ class TestGrowRANormalizationTargets(TorchTestCase):
 
         This is the whole justification for moving the rescale: the merge is a
         concatenation and the rescale is elementwise on the new ranks, so with
-        ``scaling_factor=1`` they commute.  Asserted bit-for-bit -- an
-        ``allclose`` here would hide precisely the kind of drift that silently
-        invalidates a training run.
+        ``scaling_factor=1`` they commute.
+
+        Asserted to ``1e-6``, not bit-for-bit.  It *was* bit-for-bit while the
+        rescale divided A and multiplied B, mirroring the per-element loops it
+        replaced.  Unifying the two factors into one ``_scale_factor`` gave that
+        up deliberately: no single operation reproduces both sides, and
+        ``mul_(target / norm)`` differs from ``div_(norm)`` by an ulp on every
+        tensor.  The tolerance below is two orders of magnitude above that drift
+        and still far under anything that could pass for a real difference.
         """
         for name, factory in self._both():
             for fisher in (True, False):
@@ -2668,10 +2683,11 @@ class TestGrowRANormalizationTargets(TorchTestCase):
                         new = self._grown_weights(factory, legacy=False, **kw)
                         old = self._grown_weights(factory, legacy=True, **kw)
                         for factor, a, b in zip("AB", new, old, strict=True):
-                            self.assertTrue(
-                                torch.equal(a, b),
-                                f"{factor} differs from the post-merge result by at "
-                                f"most {(a - b).abs().max():.3e}",
+                            self.assertAllClose(
+                                a,
+                                b,
+                                atol=1e-6,
+                                message=f"{factor} differs from the post-merge result",
                             )
 
     def test_scaling_factor_respected(self):
@@ -2728,3 +2744,527 @@ class TestGrowRANormalizationTargets(TorchTestCase):
                 self.assertEqual(block.rank, rank_before)
                 self.assertTrue(torch.equal(block.first_layer.weight, a_before))
                 self.assertTrue(torch.equal(block.second_layer.weight, b_before))
+
+
+class TestGrowRANormalizationStrategies(TestGrowRANormalizationTargets):
+    """The ``normalization=`` selector: joint granularity and the B-side targets.
+
+    Inherits the step-1 fixtures (``_make_linear`` / ``_make_conv`` / ``_grow``)
+    so every strategy is exercised on the same blocks the default is pinned on.
+    """
+
+    def _grow_with(self, factory, normalization, loss="quadratic", **kwargs):
+        """Grow one block under ``normalization``; return pending and merged tensors.
+
+        ``loss`` picks the objective used to accumulate the statistics.  It
+        matters more than it looks: the default ``"quadratic"`` makes
+        ``dL/dout = 2*out``, an exact linear function of the layer input, so the
+        whitened SVD target is orthogonal and **every singular value comes out
+        exactly 1** whenever ``use_fisher=True``.  Any test about singular values
+        must pass ``loss="tanh"`` (or turn Fisher off) or it measures nothing.
+        """
+        case = factory()
+        block, keep = case.block, case.keep
+        options = dict(
+            compute_delta=False,
+            use_covariance=True,
+            use_projection=False,
+            alpha_zero=False,
+            omega_zero=False,
+            ignore_singular_values=False,
+            use_fisher=True,
+        )
+        options.update(kwargs)
+        block.init_computation()
+        block.zero_grad()
+        out = block(case.x)
+        objective = (out**2).sum() if loss == "quadratic" else torch.tanh(out).sum()
+        objective.backward()
+        block.update_computation()
+        block.compute_optimal_updates(maximum_added_neurons=keep + 1, **options)
+        block.sub_select_optimal_added_parameters(keep_neurons=keep)
+
+        pending_a = block.first_layer.extended_output_layer.weight.detach().clone()
+        pending_b = block.second_layer.extended_input_layer.weight.detach().clone()
+        sigma = block.eigenvalues_extension.detach().clone()
+        old_rank = block.rank
+        block.apply_change(
+            extension_size=keep,
+            scaling_factor=1.0,
+            apply_delta=False,
+            lr_init=self.lr_init,
+            normalization=normalization,
+        )
+        a_new, b_new = self._new_ranks(block, old_rank)
+        block.reset_computation()
+        return dict(
+            case=case,
+            pending_a=pending_a,
+            pending_b=pending_b,
+            sigma=sigma,
+            a_new=a_new.detach().clone(),
+            b_new=b_new.detach().clone(),
+        )
+
+    # ---- test 5: joint preserves relative magnitudes ----
+
+    def test_joint_preserves_relative_magnitudes(self):
+        """``growra_joint`` keeps each factor's rank norms proportional to their own.
+
+        Deliberately compared against the *pre-normalization* norms on both
+        sides, not against ``sqrt(sigma_i)``: A carries an extra ``S^{-1/2}``
+        factor and B an extra ``E^{-1/2}`` one, so a ``sqrt(sigma)`` assertion
+        would fail for the wrong reason whenever Fisher is on -- which is the
+        default (see ``test_b_norms_do_not_track_sqrt_sigma_with_fisher``).
+        """
+        for name, factory in self._both():
+            with self.subTest(layer=name):
+                got = self._grow_with(factory, "growra_joint")
+                for factor, rank_dim, before, after in (
+                    ("A", 0, got["pending_a"], got["a_new"]),
+                    ("B", 1, got["pending_b"], got["b_new"]),
+                ):
+                    ratio = _rank_norms(after, rank_dim) / _rank_norms(before, rank_dim)
+                    self.assertAllClose(
+                        ratio,
+                        torch.full_like(ratio, ratio[0].item()),
+                        atol=1e-5,
+                        message=f"{factor}: joint must apply one scalar, got {ratio.tolist()}",
+                    )
+                    # ... and the spread it preserves must be a real spread.
+                    spread = _rank_norms(before, rank_dim)
+                    self.assertGreater(
+                        (spread.max() / spread.min()).item(),
+                        1.01,
+                        f"{factor}: pre-normalization norms are already uniform, "
+                        f"so this test would pass vacuously: {spread.tolist()}",
+                    )
+
+    def test_joint_hits_the_aggregate_target(self):
+        """``growra_joint`` meets the per-rank targets in the mean: same variance."""
+        for name, factory in self._both():
+            with self.subTest(layer=name):
+                got = self._grow_with(factory, "growra_joint")
+                keep, fan_out = got["case"].keep, got["case"].fan_out
+                a_frob = torch.linalg.vector_norm(got["a_new"])
+                b_frob = torch.linalg.vector_norm(got["b_new"])
+                self.assertAllClose(
+                    a_frob,
+                    torch.tensor(keep**0.5, device=a_frob.device),
+                    atol=1e-5,
+                    message="||A||_F must be sqrt(k), i.e. mean square row norm 1",
+                )
+                self.assertAllClose(
+                    b_frob,
+                    torch.tensor(
+                        (keep * fan_out * self.lr_init) ** 0.5, device=b_frob.device
+                    ),
+                    atol=1e-5,
+                    message="||B||_F must be sqrt(k * fan_out * lr)",
+                )
+
+    # ---- test 5b: the flag the default granularity nullifies ----
+
+    def test_per_rank_makes_ignore_singular_values_a_noop(self):
+        """``growra`` erases ``ignore_singular_values``; ``growra_joint`` does not.
+
+        With per-rank normalization each direction is rescaled to the same fixed
+        norm, which divides out the ``sqrt(sigma_i)`` the flag controls -- so the
+        two settings produce the same weights and any ablation over the flag
+        measures nothing.  Joint normalization keeps the ratios and the flag bites.
+        """
+        for name, factory in self._both():
+            for strategy, should_match in (("growra", True), ("growra_joint", False)):
+                with self.subTest(layer=name, normalization=strategy):
+                    on = self._grow_with(
+                        factory, strategy, loss="tanh", ignore_singular_values=True
+                    )
+                    off = self._grow_with(
+                        factory, strategy, loss="tanh", ignore_singular_values=False
+                    )
+                    # Guard the guard: with the default quadratic loss every
+                    # singular value is exactly 1 under use_fisher=True, and the
+                    # flag would be a no-op for reasons that have nothing to do
+                    # with normalization.  See _grow_with's docstring.
+                    spread = off["sigma"]
+                    self.assertGreater(
+                        (spread.max() / spread.min()).item(),
+                        1.05,
+                        f"singular values are degenerate ({spread.tolist()}), so this "
+                        f"test cannot distinguish the two settings",
+                    )
+                    self.assertFalse(
+                        torch.allclose(on["pending_b"], off["pending_b"], atol=1e-6),
+                        "the flag did not change the pending extensions at all",
+                    )
+                    diff = (on["b_new"] - off["b_new"]).abs().max().item()
+                    if should_match:
+                        # eps-level, not bit-exact: (c*x)/||c*x|| != x/||x|| exactly.
+                        self.assertLess(
+                            diff,
+                            1e-6,
+                            f"per-rank normalization should have erased the flag, "
+                            f"but B differs by {diff:.3e}",
+                        )
+                    else:
+                        self.assertGreater(
+                            diff,
+                            1e-4,
+                            f"joint normalization should preserve the flag's effect, "
+                            f"but B differs by only {diff:.3e}",
+                        )
+
+    # ---- test 6: the two granularities agree on uniform input ----
+
+    def test_joint_and_per_rank_agree_when_uniform(self):
+        """With equal rank norms the two granularities coincide -- joint generalizes."""
+        for name, factory in self._both():
+            with self.subTest(layer=name):
+                results = {}
+                for strategy in ("growra", "growra_joint"):
+                    case = factory()
+                    block = case.block
+                    block.lr_init = self.lr_init
+                    block.allocate_layer_extensions(extension_size=case.keep)
+                    a_ext = block.first_layer.extended_output_layer.weight
+                    b_ext = block.second_layer.extended_input_layer.weight
+                    with torch.no_grad():
+                        torch.manual_seed(7)
+                        nn.init.normal_(a_ext)
+                        nn.init.normal_(b_ext)
+                        # Force every rank to the same norm on both sides.
+                        a_ext.div_(
+                            _rank_norms(a_ext, 0).view(-1, *([1] * (a_ext.dim() - 1)))
+                        )
+                        shape_b = [1] * b_ext.dim()
+                        shape_b[1] = b_ext.shape[1]
+                        b_ext.div_(_rank_norms(b_ext, 1).view(shape_b))
+                    block.normalize_optimal_updates(normalization_type=strategy)
+                    results[strategy] = (a_ext.detach().clone(), b_ext.detach().clone())
+                for factor, per_rank, joint in zip(
+                    "AB", results["growra"], results["growra_joint"], strict=True
+                ):
+                    self.assertAllClose(
+                        per_rank,
+                        joint,
+                        atol=1e-5,
+                        message=f"{factor}: granularities must agree on uniform norms",
+                    )
+
+    # ---- test 7: the B-side targets ----
+
+    def test_zero_b(self):
+        """``zero_b`` zeroes B exactly and leaves A at the ``growra`` result."""
+        for name, factory in self._both():
+            with self.subTest(layer=name):
+                zeroed = self._grow_with(factory, "zero_b")
+                default = self._grow_with(factory, "growra")
+                self.assertTrue(
+                    torch.equal(zeroed["b_new"], torch.zeros_like(zeroed["b_new"])),
+                    "B must be exactly zero, not merely small",
+                )
+                self.assertTrue(
+                    torch.equal(zeroed["a_new"], default["a_new"]),
+                    "zero_b must leave the A side bit-identical to growra",
+                )
+
+    # ---- test 8: opting out ----
+
+    def test_normalization_none_keeps_optimal_magnitudes(self):
+        """``normalization=None`` merges the SVD magnitudes untouched."""
+        for name, factory in self._both():
+            with self.subTest(layer=name):
+                got = self._grow_with(factory, None)
+                self.assertTrue(
+                    torch.equal(got["a_new"], got["pending_a"]),
+                    "A must reach the merged weights unmodified",
+                )
+                self.assertTrue(
+                    torch.equal(got["b_new"], got["pending_b"]),
+                    "B must reach the merged weights unmodified",
+                )
+
+    # ---- test 9: eigenvalue bookkeeping ----
+
+    def test_eigenvalues_extension_updated(self):
+        """Joint updates ``eigenvalues_extension``; per-rank deliberately does not.
+
+        The joint path goes through ``scale_layer_extension``, which scales the
+        singular values by ``(c_A * c_B) ** exponent`` with the exponent chosen by
+        ``_first_order_uses_squared_singular_values`` -- the one thing
+        ``ignore_singular_values`` still controls.  Both regimes are asserted.
+        """
+        for ignore_sv in (True, False):
+            exponent = 1.0 if ignore_sv else 0.5
+            with self.subTest(ignore_singular_values=ignore_sv):
+                case = self._make_linear()
+                block, keep = case.block, case.keep
+                block.init_computation()
+                block.zero_grad()
+                (block(case.x) ** 2).sum().backward()
+                block.update_computation()
+                block.compute_optimal_updates(
+                    maximum_added_neurons=keep + 1,
+                    compute_delta=False,
+                    use_covariance=True,
+                    use_projection=False,
+                    alpha_zero=False,
+                    omega_zero=False,
+                    ignore_singular_values=ignore_sv,
+                    use_fisher=True,
+                )
+                block.sub_select_optimal_added_parameters(keep_neurons=keep)
+                block.lr_init = self.lr_init
+                sigma_before = block.eigenvalues_extension.detach().clone()
+                a_before = _rank_norms(
+                    block.first_layer.extended_output_layer.weight, 0
+                ).clone()
+                b_before = _rank_norms(
+                    block.second_layer.extended_input_layer.weight, 1
+                ).clone()
+
+                block.normalize_optimal_updates(normalization_type="growra_joint")
+
+                a_after = _rank_norms(block.first_layer.extended_output_layer.weight, 0)
+                b_after = _rank_norms(block.second_layer.extended_input_layer.weight, 1)
+                scale_a = (a_after[0] / a_before[0]).item()
+                scale_b = (b_after[0] / b_before[0]).item()
+                expected = sigma_before * (scale_a * scale_b) ** exponent
+                self.assertAllClose(
+                    block.eigenvalues_extension,
+                    expected,
+                    atol=1e-5,
+                    rtol=1e-4,
+                    message=f"eigenvalues must scale by (c_A * c_B)**{exponent}",
+                )
+
+    def test_eigenvalues_extension_updated_per_rank(self):
+        """Per-rank normalization keeps the singular values consistent too.
+
+        Returning the applied scale from ``_scale_factor`` made this fall out for
+        free: the update broadcasts, so it is per rank when the scales are, and
+        global when they are not.  Previously only the both-joint strategy
+        maintained the invariant and the rest silently did not.
+        """
+        case = self._make_linear()
+        block, keep = case.block, case.keep
+        block.init_computation()
+        block.zero_grad()
+        (block(case.x) ** 2).sum().backward()
+        block.update_computation()
+        block.compute_optimal_updates(
+            maximum_added_neurons=keep + 1,
+            compute_delta=False,
+            use_covariance=True,
+            use_projection=False,
+            alpha_zero=False,
+            omega_zero=False,
+            ignore_singular_values=False,
+            use_fisher=True,
+        )
+        block.sub_select_optimal_added_parameters(keep_neurons=keep)
+        block.lr_init = self.lr_init
+        before = block.eigenvalues_extension.detach().clone()
+        a_before = _rank_norms(block.first_layer.extended_output_layer.weight, 0).clone()
+        b_before = _rank_norms(block.second_layer.extended_input_layer.weight, 1).clone()
+
+        block.normalize_optimal_updates(normalization_type="growra")
+
+        a_after = _rank_norms(block.first_layer.extended_output_layer.weight, 0)
+        b_after = _rank_norms(block.second_layer.extended_input_layer.weight, 1)
+        scales = (a_after / a_before) * (b_after / b_before)
+        # ignore_singular_values=False above, so the singular values were applied
+        # to the weights and the exponent is 1/2.
+        self.assertAllClose(
+            block.eigenvalues_extension,
+            before * scales**0.5,
+            atol=1e-5,
+            rtol=1e-4,
+            message="per-rank normalization must rescale each singular value",
+        )
+
+    # ---- delegation and escape hatch ----
+
+    def test_base_strategy_still_reachable(self):
+        """An unknown ``normalization_type`` falls through to the base dispatch.
+
+        Grown from rank 2 rather than 0: ``gradmax_normalization`` needs existing
+        neurons to derive its reference norm, and skips with a warning without them.
+        """
+        keep = 2
+        block = GrowRALinear(_linear(8, 6), rank=2)
+        with torch.no_grad():
+            nn.init.normal_(block.second_layer.weight)
+        case = _Case(block, _randn(32, 8), keep, 6, (keep, 8), (6, keep))
+        block.init_computation()
+        block.zero_grad()
+        (block(case.x) ** 2).sum().backward()
+        block.update_computation()
+        block.compute_optimal_updates(
+            maximum_added_neurons=keep + 1,
+            compute_delta=False,
+            use_covariance=True,
+            use_projection=False,
+            alpha_zero=False,
+            omega_zero=False,
+            ignore_singular_values=False,
+            use_fisher=True,
+        )
+        block.sub_select_optimal_added_parameters(keep_neurons=keep)
+        before = block.second_layer.extended_input_layer.weight.detach().clone()
+        block.normalize_optimal_updates(normalization_type="gradmax_normalization")
+        after = block.second_layer.extended_input_layer.weight
+        self.assertFalse(
+            torch.allclose(before, after, atol=1e-6),
+            "the base strategy should have rescaled the extension",
+        )
+
+    def test_callable_normalization(self):
+        """A callable is invoked with the block and bypasses every named strategy."""
+        seen = []
+
+        def custom(block):
+            seen.append(block)
+            block._extension_weight(block.second_layer.extended_input_layer).fill_(0.25)
+
+        got = self._grow_with(self._make_linear, custom)
+        self.assertEqual(len(seen), 1)
+        self.assertTrue(
+            torch.equal(got["b_new"], torch.full_like(got["b_new"], 0.25)),
+            "the callable's effect must reach the merged weights",
+        )
+
+    # ---- the two axes, varied independently ----
+
+    def _variances(self, factory, normalization):
+        """Merged-in new-rank variances, as ``(var(A), var(B))``."""
+        got = self._grow_with(factory, normalization, loss="tanh")
+        return (
+            got["a_new"].var(unbiased=False).item(),
+            got["b_new"].var(unbiased=False).item(),
+            got,
+        )
+
+    def test_zero_b_joint(self):
+        """``zero_b_joint``: A normalized jointly, B zeroed.
+
+        The combination the flat names could not express -- ``zero_b`` pins A to
+        per-rank.  Zeroing is granularity-independent, so only the A side differs.
+        """
+        for name, factory in self._both():
+            with self.subTest(layer=name):
+                joint = self._grow_with(factory, "zero_b_joint", loss="tanh")
+                per_rank = self._grow_with(factory, "zero_b", loss="tanh")
+                self.assertTrue(
+                    torch.equal(joint["b_new"], torch.zeros_like(joint["b_new"])),
+                    "B must be exactly zero",
+                )
+                # A: one scalar for the whole factor, so the ranks keep their spread.
+                ratio = _rank_norms(joint["a_new"], 0) / _rank_norms(
+                    joint["pending_a"], 0
+                )
+                self.assertAllClose(
+                    ratio,
+                    torch.full_like(ratio, ratio[0].item()),
+                    atol=1e-5,
+                    message="zero_b_joint must scale A by a single factor",
+                )
+                # ... and that is genuinely different from zero_b's per-rank A.
+                self.assertFalse(
+                    torch.allclose(joint["a_new"], per_rank["a_new"], atol=1e-4),
+                    "zero_b_joint and zero_b must differ on the A side",
+                )
+
+    def test_growra_joint_gain_variance_target(self):
+        """``growra_joint_gain``: ``var(B_ij) = gain**2 * lr_init / fan_out``.
+
+        Unlike the default B rule, this makes the *column* norm ``gain*sqrt(lr)``
+        rather than ``sqrt(fan_out*lr)``, so the adapter's output scale is what
+        stays fixed as ``fan_out`` varies.
+        """
+        for name, factory in self._both():
+            with self.subTest(layer=name):
+                var_a, var_b, got = self._variances(factory, "growra_joint_gain")
+                fan_out = got["case"].fan_out
+                # torch convention: the gain squares into the variance, as
+                # torch.nn.init.calculate_gain defines it.
+                expected_b = DEFAULT_GAIN**2 * self.lr_init / fan_out
+                self.assertAlmostEqual(
+                    var_b,
+                    expected_b,
+                    delta=0.02 * expected_b,
+                    msg=f"var(B) should be gain*lr/fan_out = {expected_b}",
+                )
+                # A keeps the usual target, so the two axes really are independent.
+                # fan_in spans every axis of A but the rank one: C_in * kH * kW
+                # for a conv, in_features for a linear.
+                fan_in = math.prod(got["case"].a_shape[1:])
+                self.assertAlmostEqual(
+                    var_a,
+                    1.0 / fan_in,
+                    delta=0.05 / fan_in,
+                    msg="var(A) must stay 1/fan_in whatever B does",
+                )
+
+    def test_gain_is_configurable(self):
+        """``gain`` multiplies the target variance, so ``||B||_F`` goes as its sqrt."""
+        norms = {}
+        for gain in (1.0, 2.0):
+            spec = GrowRANormalization(
+                a=FactorScaling(granularity="joint"),
+                b=FactorScaling(granularity="joint", gain=gain, multiplier=LR_INIT),
+            )
+            got = self._grow_with(self._make_linear, spec, loss="tanh")
+            norms[gain] = torch.linalg.vector_norm(got["b_new"]).item()
+        # ||B||_F is linear in the gain, the variance quadratic.
+        self.assertAlmostEqual(
+            norms[2.0] / norms[1.0],
+            2.0,
+            delta=1e-4,
+            msg=f"doubling the gain must double ||B||_F, got {norms}",
+        )
+
+    def test_spec_accepted_directly(self):
+        """A ``GrowRANormalization`` is accepted wherever its name is."""
+        by_name = self._grow_with(self._make_linear, "growra", loss="tanh")
+        by_spec = self._grow_with(
+            self._make_linear,
+            GrowRANormalization(
+                a=FactorScaling(),
+                b=FactorScaling(multiplier=LR_INIT, fan_normalized=False),
+            ),
+            loss="tanh",
+        )
+        self.assertTrue(torch.equal(by_name["a_new"], by_spec["a_new"]))
+        self.assertTrue(torch.equal(by_name["b_new"], by_spec["b_new"]))
+
+    def test_a_granularity_independent_of_b_rule(self):
+        """The A side depends only on ``a_granularity``, never on what B does."""
+        per_rank = [
+            self._grow_with(self._make_linear, n, loss="tanh")["a_new"]
+            for n in ("growra", "zero_b")
+        ]
+        for other in per_rank[1:]:
+            self.assertTrue(
+                torch.equal(per_rank[0], other),
+                "per-rank A must be identical across B rules",
+            )
+        joint = [
+            self._grow_with(self._make_linear, n, loss="tanh")["a_new"]
+            for n in ("growra_joint", "growra_joint_gain", "zero_b_joint")
+        ]
+        for other in joint[1:]:
+            self.assertTrue(
+                torch.equal(joint[0], other),
+                "joint A must be identical across B rules",
+            )
+        self.assertFalse(
+            torch.allclose(per_rank[0], joint[0], atol=1e-4),
+            "the two granularities must actually differ",
+        )
+
+    def test_unknown_spec_type_raises(self):
+        """A value that is neither a spec, a known name, nor callable is rejected."""
+        case = self._make_linear()
+        with self.assertRaises(TypeError):
+            case.block.normalize_optimal_updates(normalization_type=42)

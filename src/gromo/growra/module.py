@@ -18,8 +18,11 @@ via the FOGRO pipeline (see :mod:`gromo.growra.container`).
 """
 
 import copy
+import math
 import warnings
 from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any, ClassVar, Literal, TypeAlias
 
 import torch
 import torch.nn as nn
@@ -33,6 +36,88 @@ from gromo.containers.growing_block import (
 from gromo.modules.conv2d_growing_module import Conv2dGrowingModule
 from gromo.modules.growing_module import SupportsExtendedForward
 from gromo.modules.linear_growing_module import LinearGrowingModule
+
+
+#: How a factor's target is reached: one scalar per new rank, or one for the
+#: whole factor.  ``joint`` leaves the ranks' relative magnitudes -- and hence
+#: the ``sqrt(sigma_i)`` weighting from the SVD -- intact.
+Granularity: TypeAlias = Literal["per_rank", "joint"]
+
+#: Default gain, matching ``torch.nn.init.calculate_gain("relu")``.
+DEFAULT_GAIN = math.sqrt(2)
+
+#: ``multiplier`` sentinel meaning "resolve against the block's ``lr_init``",
+#: which is mutable state on the module rather than a constant.
+LR_INIT: Literal["lr_init"] = "lr_init"
+
+
+@dataclass(frozen=True)
+class FactorScaling:
+    """How one factor of the new ranks is rescaled.
+
+    A and B are the same operation on a different axis -- the rank is dim 0 of A
+    and dim 1 of B -- so one description covers both.  The fan (elements per
+    rank: ``fan_in`` for A, ``fan_out`` for B) is read off the tensor rather
+    than passed in.
+
+    The target is
+
+    .. code-block:: text
+
+        var(W_ij) = gain**2 * multiplier / fan     when fan_normalized
+                  = gain**2 * multiplier           otherwise
+
+    applied as a norm per rank slice, ``||slice|| = sqrt(fan * var)``.
+
+    Attributes
+    ----------
+    granularity : Granularity
+        ``"per_rank"`` normalizes each new rank separately, which forces them all
+        to the same magnitude and so discards the ``sqrt(sigma_i)`` weighting the
+        SVD produced.  ``"joint"`` applies one scalar to the whole factor and
+        meets the same target in the mean, keeping the ranks' relative sizes.
+    gain : float
+        Squared into the target variance, as ``torch.nn.init.calculate_gain``
+        defines it.
+    multiplier : float | Literal["lr_init"]
+        Multiplies the target variance.  ``"lr_init"`` resolves to the block's
+        current learning-rate hint; ``0.0`` zeroes the factor.
+    fan_normalized : bool
+        Whether the target variance is divided by the fan.  ``False`` fixes the
+        per-weight variance; ``True`` fixes the per-rank slice norm, so the
+        factor's contribution does not drift as the fan changes.
+    """
+
+    granularity: Granularity = "per_rank"
+    gain: float = 1.0
+    multiplier: float | Literal["lr_init"] = 1.0
+    fan_normalized: bool = True
+
+
+@dataclass(frozen=True)
+class GrowRANormalization:
+    """How both factors of the new ranks are rescaled, before the merge.
+
+    Attributes
+    ----------
+    a : FactorScaling
+        Defaults to ``var(A_ij) = 1/fan_in`` -- linear Kaiming, there being no
+        nonlinearity between A and B.
+    b : FactorScaling
+        Defaults to ``var(B_ij) = lr_init``, the GrowRA paper Section A.5 rule.
+    """
+
+    a: FactorScaling = FactorScaling()
+    b: FactorScaling = FactorScaling(multiplier=LR_INIT, fan_normalized=False)
+
+
+#: What ``apply_change(normalization=...)`` accepts: a :class:`GrowRANormalization`,
+#: one of its registered names, any name the base dispatch knows, a callable
+#: taking the block, or ``None`` for "keep the magnitudes
+#: ``compute_optimal_updates`` produced".
+NormalizationSpec: TypeAlias = (
+    "GrowRANormalization | str | Callable[[GrowRABlock], None] | None"
+)
 
 
 # Types accepted as the "original layer" for linear GrowRA
@@ -111,6 +196,30 @@ class GrowRABlock(GrowingBlock):
     genuine overrides with compatible signatures rather than a second, unrelated
     definition of the same name.
     """
+
+    #: Named shorthands for the combinations we actually run.  Anything not
+    #: listed here is forwarded to ``GrowingBlock.normalize_optimal_updates``;
+    #: anything listed can equally be spelled out as a ``GrowRANormalization``.
+    GROWRA_NORMALIZATIONS: ClassVar[dict[str, GrowRANormalization]] = {
+        # paper Section A.5: var(A) = 1/fan_in, var(B) = lr_init
+        "growra": GrowRANormalization(),
+        "growra_joint": GrowRANormalization(
+            a=FactorScaling(granularity="joint"),
+            b=FactorScaling(
+                granularity="joint", multiplier=LR_INIT, fan_normalized=False
+            ),
+        ),
+        # var(B) = gain**2 * lr / fan_out, so ||B col|| = gain * sqrt(lr)
+        "growra_joint_gain": GrowRANormalization(
+            a=FactorScaling(granularity="joint"),
+            b=FactorScaling(granularity="joint", gain=DEFAULT_GAIN, multiplier=LR_INIT),
+        ),
+        "zero_b": GrowRANormalization(b=FactorScaling(multiplier=0.0)),
+        "zero_b_joint": GrowRANormalization(
+            a=FactorScaling(granularity="joint"),
+            b=FactorScaling(multiplier=0.0),
+        ),
+    }
 
     # Set by the subclass ``__init__``; declared here for the methods below.
     lr_init: float
@@ -286,45 +395,155 @@ class GrowRABlock(GrowingBlock):
             and self.second_layer.extended_input_layer is not None
         )
 
-    @torch.no_grad()
-    def _normalize_new_ranks(self) -> None:
-        """Rescale the pending new ranks per GrowRA paper Section A.5.
+    @staticmethod
+    def _joint_scale(weight: torch.Tensor, target_norm: float) -> float:
+        """Single factor bringing ``weight`` to Frobenius norm ``target_norm``.
 
-        This is a *normalization*, not an initialization: every value it touches
-        was computed by ``compute_optimal_updates`` and only its magnitude
-        changes, never its direction.
+        Parameters
+        ----------
+        weight : torch.Tensor
+            Pending extension for one factor.
+        target_norm : float
+            Frobenius norm it should end up with.
 
-        - Each new A row is rescaled so ``var(A_ij) = 1/fan_in`` (linear Kaiming,
-          there being no nonlinearity between A and B), giving ``||A_row|| = 1``.
-        - Each new B column is rescaled so ``var(B_ij) = lr_init`` (paper Section
-          A.5: "scale B to have variance eta"), giving
-          ``||B_col|| = sqrt(fan_out * lr_init)``.
-
-        Operates on the *pending* extensions, before ``apply_change`` merges
-        them, which is where every other weight-shaping operation in this library
-        works.  The new ranks are then whole tensors rather than a slice of a
-        larger one, so no ``old_rank`` bookkeeping is needed, and a caller-set
-        ``scaling_factor`` still applies on top instead of being erased.
-
-        Does nothing when there is no pending extension.
+        Returns
+        -------
+        float
+            ``target_norm / ||weight||_F``, or ``1.0`` when the extension is all
+            zeros -- the same "leave zeros alone" rule as the per-rank path.
         """
+        # ``contiguous()`` for the reason in ``_rank_norms``: a strided reduction
+        # accumulates in a different order and can move the result by an ulp.
+        norm = torch.linalg.vector_norm(weight.contiguous()).item()
+        return target_norm / norm if norm > 0 else 1.0
+
+    @torch.no_grad()
+    def _scale_factor(
+        self, weight: torch.Tensor, rank_dim: int, spec: FactorScaling
+    ) -> torch.Tensor | float:
+        """Rescale one factor of the pending extension in place.
+
+        The whole normalization API is this method, applied once per factor.
+
+        Parameters
+        ----------
+        weight : torch.Tensor
+            Pending extension, modified in place.
+        rank_dim : int
+            Axis carrying the new ranks: 0 for A, 1 for B.
+        spec : FactorScaling
+            Target and granularity.
+
+        Returns
+        -------
+        torch.Tensor | float
+            The factor actually applied: one scalar for ``"joint"``, one per rank
+            for ``"per_rank"``.  Returned so the caller can keep
+            ``eigenvalues_extension`` consistent.
+        """
+        fan = weight.numel() // weight.shape[rank_dim]
+        multiplier = self.lr_init if spec.multiplier == LR_INIT else spec.multiplier
+        # ||slice|| = sqrt(fan * var).  Computed in this form rather than via
+        # ``var`` so the common targets stay exact: no fan * (1 / fan) round trip.
+        slice_norm = spec.gain * (multiplier * (1 if spec.fan_normalized else fan)) ** 0.5
+        if spec.granularity == "per_rank":
+            scale = slice_norm / self._rank_norms_for_scaling(weight, rank_dim)
+            weight.mul_(scale)
+            return scale.flatten()
+        else:  # spec.granularity == "joint"
+            scale = self._joint_scale(weight, weight.shape[rank_dim] ** 0.5 * slice_norm)
+            weight.mul_(scale)
+            return scale
+
+    def _update_eigenvalues_extension(
+        self, scale_a: torch.Tensor | float, scale_b: torch.Tensor | float
+    ) -> None:
+        """Rescale ``eigenvalues_extension`` to match a rescale of the extensions.
+
+        The first-order improvement is bilinear in the two extension scales, so
+        the singular values move by ``(scale_a * scale_b) ** exponent`` -- the
+        same rule as ``GrowingModule.scale_layer_extension``, and the same
+        exponent convention, which depends on whether the singular values were
+        applied to the weights in the first place.  Broadcasting makes this work
+        per rank as well as globally.
+
+        Parameters
+        ----------
+        scale_a : torch.Tensor | float
+            Factor applied to the A extension, as returned by ``_scale_factor``.
+        scale_b : torch.Tensor | float
+            Factor applied to the B extension, as returned by ``_scale_factor``.
+        """
+        layer = self.second_layer
+        if layer.eigenvalues_extension is None:
+            return
+        exponent = 0.5 if layer._first_order_uses_squared_singular_values else 1.0
+        layer.eigenvalues_extension *= (scale_a * scale_b) ** exponent
+
+    def _apply_normalization(self, spec: GrowRANormalization) -> None:
+        """Rescale A, then B, then reconcile the singular values.
+
+        Parameters
+        ----------
+        spec : GrowRANormalization
+            The two factor scalings to apply.
+        """
+        scale_a = self._scale_factor(
+            self._extension_weight(self.first_layer.extended_output_layer), 0, spec.a
+        )
+        scale_b = self._scale_factor(
+            self._extension_weight(self.second_layer.extended_input_layer), 1, spec.b
+        )
+        self._update_eigenvalues_extension(scale_a, scale_b)
+
+    def normalize_optimal_updates(self, **kwargs: Any) -> None:
+        """Normalize the pending extensions, dispatching on ``normalization_type``.
+
+        Accepts a :class:`GrowRANormalization`, one of its names in
+        ``GROWRA_NORMALIZATIONS``, or a user-supplied callable; every other value
+        is forwarded to ``GrowingBlock.normalize_optimal_updates`` unchanged, so
+        the base strategies keep working through a GrowRA block.
+
+        ``**kwargs`` mirrors ``GrowingBlock.normalize_optimal_updates``, whose
+        signature is itself ``**kwargs``; spelling the parameters out here would
+        *narrow* it and make this an invalid override.
+
+        Parameters
+        ----------
+        **kwargs : Any
+            ``normalization_type`` selects the strategy (default ``"growra"``).
+            Remaining keys are only meaningful for the base strategies and are
+            passed along with it.
+
+        Raises
+        ------
+        TypeError
+            If ``normalization_type`` is neither a ``GrowRANormalization``, a
+            string, nor a callable.
+        """
+        normalization_type = kwargs.pop("normalization_type", "growra")
+        if callable(normalization_type):
+            # Same contract as the named strategies: the callable reshapes
+            # weights in place, so it runs without autograd tracking.
+            with torch.no_grad():
+                normalization_type(self)
+            return
+        if isinstance(normalization_type, str):
+            if normalization_type not in self.GROWRA_NORMALIZATIONS:
+                super().normalize_optimal_updates(
+                    normalization_type=normalization_type, **kwargs
+                )
+                return
+            normalization_type = self.GROWRA_NORMALIZATIONS[normalization_type]
+        if not isinstance(normalization_type, GrowRANormalization):
+            raise TypeError(
+                f"normalization_type must be a GrowRANormalization, one of "
+                f"{sorted(self.GROWRA_NORMALIZATIONS)}, a name the base dispatch "
+                f"knows, or a callable; got {normalization_type!r}."
+            )
         if not self._has_pending_extensions():
             return
-        # The two factors are divided and multiplied respectively rather than
-        # sharing one operation: that is bit-for-bit what the per-rank loops
-        # this replaces did, so the refactor cannot move any number.
-        a_new = self._extension_weight(self.first_layer.extended_output_layer)
-        a_new.div_(self._rank_norms_for_scaling(a_new, 0))
-
-        b_new = self._extension_weight(self.second_layer.extended_input_layer)
-        # ``fan_out = b_new.shape[0]`` only holds because every axis after the
-        # rank axis is a singleton (a 1x1 kernel for GrowRAConv2d); otherwise
-        # the per-rank norm would span fan_out * kH * kW entries.
-        assert all(size == 1 for size in b_new.shape[2:]), (
-            f"B must have a 1x1 kernel to derive fan_out, got {tuple(b_new.shape)}"
-        )
-        target = (b_new.shape[0] * self.lr_init) ** 0.5
-        b_new.mul_(target / self._rank_norms_for_scaling(b_new, 1))
+        self._apply_normalization(normalization_type)
 
     def apply_change(
         self,
@@ -334,7 +553,7 @@ class GrowRABlock(GrowingBlock):
         apply_extension: bool = True,
         *,
         lr_init: float | None = None,
-        reinit_extension: bool = True,
+        normalization: NormalizationSpec = "growra",
     ) -> None:
         """Normalize the pending new ranks, then apply the change.
 
@@ -361,17 +580,22 @@ class GrowRABlock(GrowingBlock):
             Whether to merge the extension, see ``GrowingBlock.apply_change``.
         lr_init : float | None
             Overrides ``self.lr_init``, the variance targeted for the new B
-            columns by ``_normalize_new_ranks``.  ``None`` keeps the current value.
-        reinit_extension : bool
-            Whether the pending new ranks are rescaled by
-            ``_normalize_new_ranks`` (paper A.5 variance-eta normalization).
-            ``False`` keeps the optimal magnitudes produced by
-            ``compute_optimal_updates`` (legacy <=819a23c behaviour).
+            columns.  ``None`` keeps the current value.
+        normalization : NormalizationSpec
+            Strategy applied to the pending extensions before merging; default
+            ``"growra"`` (paper A.5, per-rank).  See ``GROWRA_NORMALIZATIONS``
+            for the GrowRA strategies; any name the base dispatch knows also
+            works, as does a callable taking this block.  ``None`` keeps the
+            magnitudes ``compute_optimal_updates`` produced.
         """
         if lr_init is not None:
             self.lr_init = lr_init
-        if reinit_extension and apply_extension:
-            self._normalize_new_ranks()
+        if (
+            normalization is not None
+            and apply_extension
+            and self._has_pending_extensions()
+        ):
+            self.normalize_optimal_updates(normalization_type=normalization)
         super().apply_change(
             extension_size=extension_size,
             scaling_factor=scaling_factor,
