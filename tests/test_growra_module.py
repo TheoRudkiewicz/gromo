@@ -1012,6 +1012,10 @@ class TestGrowraDropoutLinear(TestCase):
     def test_forward_train_mode_is_stochastic(self):
         """In train mode with dropout, two forwards should differ."""
         lora = GrowRALinear(_linear(10, 20), rank=4, dropout=0.9)
+        # A seed rank starts as a no-op (zero B), so the adapter path — and
+        # with it the dropout applied to its input — is only observable once
+        # B is non-zero, as it is after any training.
+        nn.init.normal_(lora.second_layer.weight)
         lora.train()
         x = _ones(16, 10)
         out1 = lora(x)
@@ -1075,6 +1079,9 @@ class TestGrowraDropoutConv2d(TestCase):
 
     def test_forward_train_mode_is_stochastic(self):
         lora = GrowRAConv2d(_conv2d(3, 8, 3, padding=1), rank=4, dropout=0.9)
+        # See the GrowRALinear counterpart: a seed rank is a no-op until B is
+        # non-zero, which is what makes the dropout observable.
+        nn.init.normal_(lora.second_layer.weight)
         lora.train()
         x = _ones(4, 3, 8, 8)
         self.assertFalse(torch.allclose(lora(x), lora(x)))

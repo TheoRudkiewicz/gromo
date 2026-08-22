@@ -24,6 +24,7 @@ from gromo.growra.container import (
 )
 from gromo.growra.module import GrowRAConv2d, GrowRALinear
 from gromo.utils.utils import global_device
+from tests.torch_unittest import TorchTestCase
 
 
 def _linear(*args, **kwargs):
@@ -1030,3 +1031,156 @@ class TestGrowRAModelExtendedForward(TestCase):
             out_ext = lora_model.extended_forward(x)
         self.assertEqual(out_fwd.shape, out_ext.shape)
         self.assertTrue(torch.allclose(out_fwd, out_ext))
+
+
+class TestInitialRank(TorchTestCase):
+    """Tests for the ``initial_rank`` seed-rank parameter (G2)."""
+
+    # (in, out) of each layer wrapped by _make_simple_model() / the conv model
+    # below.  Expected adapter shapes are derived from these so that the
+    # rank-axis convention is pinned rather than restated per test.
+    LINEAR_TARGETS = ((10, 20), (20, 5))
+    CONV_TARGETS = ((3, 8), (8, 16))
+    CONV_KERNEL = (3, 3)
+
+    @staticmethod
+    def _conv_model():
+        return nn.Sequential(
+            _conv2d(3, 8, 3, padding=1), nn.ReLU(), _conv2d(8, 16, 3, padding=1)
+        )
+
+    def _assert_linear_shapes(self, mods, k):
+        """A is ``(k, in)``, B is ``(out, k)`` — a transposed seed cannot pass."""
+        self.assertEqual(len(mods), len(self.LINEAR_TARGETS))
+        for m, (in_f, out_f) in zip(mods, self.LINEAR_TARGETS, strict=True):
+            self.assertShapeEqual(
+                m.first_layer.weight, (k, in_f), message=f"A of {m.name}"
+            )
+            self.assertShapeEqual(
+                m.second_layer.weight, (out_f, k), message=f"B of {m.name}"
+            )
+
+    def _assert_conv_shapes(self, mods, k):
+        """A is ``(k, in, kh, kw)``, B is ``(out, k, 1, 1)`` — B's kernel is 1x1."""
+        self.assertEqual(len(mods), len(self.CONV_TARGETS))
+        for m, (in_c, out_c) in zip(mods, self.CONV_TARGETS, strict=True):
+            self.assertShapeEqual(
+                m.first_layer.weight,
+                (k, in_c, *self.CONV_KERNEL),
+                message=f"A of {m.name}",
+            )
+            self.assertShapeEqual(
+                m.second_layer.weight, (out_c, k, 1, 1), message=f"B of {m.name}"
+            )
+
+    def test_initial_rank_is_applied(self):
+        """Every adapter starts at ``initial_rank``, on the right axes."""
+        for k in (0, 1, 4):
+            with self.subTest(k=k):
+                lora_model = get_growra_model(_make_simple_model(), initial_rank=k)
+                mods = lora_model.growra_modules()
+                for m in mods:
+                    self.assertEqual(m.rank, k)
+                self._assert_linear_shapes(mods, k)
+
+    def test_initial_rank_is_applied_conv2d(self):
+        """Same, for Conv2d adapters."""
+        lora_model = get_growra_model(
+            self._conv_model(), initial_rank=3, in_features=3, out_features=16
+        )
+        mods = lora_model.growra_modules()
+        for m in mods:
+            self.assertIsInstance(m, GrowRAConv2d)
+            self.assertEqual(m.rank, 3)
+        self._assert_conv_shapes(mods, 3)
+
+    def test_seed_adapter_is_a_noop(self):
+        """A seeded model reproduces the backbone exactly, before any training.
+
+        The ``use_dora=True`` arm is the point: ``enable_dora`` snapshots
+        ``||W + BA||``, so resetting the adapter *after* injection leaves
+        ``magnitude != ||W||`` and the model is not a no-op. That arm fails
+        under the naive ordering while ``use_dora=False`` passes.
+        """
+        for use_dora in (False, True):
+            with self.subTest(use_dora=use_dora):
+                model = _make_simple_model()
+                x = _randn(3, 10)
+                with torch.no_grad():
+                    expected = model(x).clone()
+                lora_model = get_growra_model(model, initial_rank=3, use_dora=use_dora)
+                with torch.no_grad():
+                    out = lora_model(x)
+                # W0 + 0 * A re-materializes the weight, so close, not bit-equal.
+                self.assertAllClose(out, expected, atol=1e-6)
+
+    def test_seed_adapter_is_a_noop_conv2d(self):
+        """Same no-op guarantee for Conv2d targets, both DoRA arms."""
+        for use_dora in (False, True):
+            with self.subTest(use_dora=use_dora):
+                model = self._conv_model()
+                x = _randn(2, 3, 8, 8)
+                with torch.no_grad():
+                    expected = model(x).clone()
+                lora_model = get_growra_model(
+                    model,
+                    initial_rank=3,
+                    use_dora=use_dora,
+                    in_features=3,
+                    out_features=16,
+                )
+                with torch.no_grad():
+                    out = lora_model(x)
+                self.assertAllClose(out, expected, atol=1e-6)
+
+    def test_seed_adapter_b_is_zero_and_a_is_not(self):
+        """The no-op is achieved by zeroing B, not by zeroing the whole adapter."""
+        lora_model = get_growra_model(_make_simple_model(), initial_rank=3)
+        for m in lora_model.growra_modules():
+            self.assertAllClose(
+                m.second_layer.weight,
+                torch.zeros_like(m.second_layer.weight),
+                message=f"B of {m.name} must be exactly zero",
+            )
+            self.assertGreater(m.first_layer.weight.abs().max().item(), 0.0)
+
+    def test_seed_adapter_is_trainable_and_grows(self):
+        """A seed rank yields trainable parameters and composes with growth."""
+        lora_model = get_growra_model(_make_simple_model(), initial_rank=3)
+        params = lora_model.growra_parameters()
+        self.assertGreater(len(params), 0)
+        for p in params:
+            self.assertTrue(p.requires_grad)
+
+        data = [(_randn(8, 10), _randn(8, 5)) for _ in range(3)]
+        _grow(lora_model, data, added_rank=2)
+        mods = lora_model.growra_modules()
+        for m in mods:
+            # rank == seed + added, not just added: growth extends the seed
+            # rather than overwriting it.
+            self.assertEqual(m.rank, 5)
+        self._assert_linear_shapes(mods, 5)
+
+    def test_rank_zero_has_no_growra_parameters(self):
+        """Contrast for the test above: rank 0 is empty with DoRA off."""
+        lora_model = get_growra_model(_make_simple_model(), initial_rank=0)
+        for m in lora_model.growra_modules():
+            self.assertEqual(sum(p.numel() for p in m.growra_parameters()), 0)
+
+    def test_scaling_sees_the_seed_rank(self):
+        """The scaling function is live from the first forward at a seed rank.
+
+        At rank 0 there is no adapter path and ``scaling`` is the 0.0
+        sentinel; with a seed rank it is ``scaling_fn(initial_rank)``. So an
+        ablation's effective scale now depends on ``initial_rank`` where
+        before it did not.
+        """
+        lora_model = get_growra_model(
+            _make_simple_model(), initial_rank=4, scaling=lambda r: 1.0 / r
+        )
+        for m in lora_model.growra_modules():
+            self.assertAlmostEqual(m.scaling, 0.25)
+
+        rank0 = get_growra_model(_make_simple_model(), scaling=lambda r: 1.0 / r)
+        for m in rank0.growra_modules():
+            self.assertAlmostEqual(m.scaling, 0.0)

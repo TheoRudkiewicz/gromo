@@ -110,8 +110,9 @@ def _inject_growra_inplace(
     dropout: float,
     use_dora: bool,
     target_modules: list[str] | None,
+    initial_rank: int = 0,
 ) -> None:
-    """Replace targeted layers with GrowRA wrappers in-place (rank 0).
+    """Replace targeted layers with GrowRA wrappers in-place.
 
     Parameters
     ----------
@@ -125,6 +126,10 @@ def _inject_growra_inplace(
         Whether to enable DoRA magnitude reparameterization.
     target_modules : list[str] | None
         Name filter; ``None`` wraps all linear / conv layers.
+    initial_rank : int
+        Rank each injected adapter starts at. Default ``0`` (no adaptation
+        until the first growth step). A seed rank ``> 0`` is initialized to a
+        no-op adapter (Kaiming A, zero B) by the wrapper constructors.
     """
     all_types: UnionType = _LinearLayerType | _Conv2dLayerType
     replacements: list[tuple[nn.Module, str, nn.Module]] = []
@@ -152,7 +157,7 @@ def _inject_growra_inplace(
         if isinstance(module, _LinearLayerType):
             replacement: nn.Module = GrowRALinear(
                 module,
-                rank=0,
+                rank=initial_rank,
                 scaling=scaling,
                 dropout=dropout,
                 use_dora=use_dora,
@@ -161,7 +166,7 @@ def _inject_growra_inplace(
         else:
             replacement = GrowRAConv2d(
                 module,
-                rank=0,
+                rank=initial_rank,
                 scaling=scaling,
                 dropout=dropout,
                 use_dora=use_dora,
@@ -212,6 +217,11 @@ class GrowRAModel(SequentialGrowingModel):
     target_modules : list[str] | None
         If provided, only wrap layers whose full name contains one of these
         strings. Wraps all linear / conv layers when ``None``.
+    initial_rank : int
+        Rank each adapter starts at. Default ``0`` — the adapters grow from
+        nothing via the FOGRO pipeline. A seed rank ``> 0`` starts every
+        adapter as a no-op (Kaiming A, zero B), so the wrapped model still
+        reproduces the backbone exactly before any training.
     in_features : int | None
         Input feature size (inferred from the first layer when ``None``).
     out_features : int | None
@@ -227,6 +237,7 @@ class GrowRAModel(SequentialGrowingModel):
         dropout: float = 0.0,
         use_dora: bool = False,
         target_modules: list[str] | None = None,
+        initial_rank: int = 0,
         in_features: int | None = None,
         out_features: int | None = None,
         device: torch.device | str | None = None,
@@ -247,13 +258,14 @@ class GrowRAModel(SequentialGrowingModel):
         for p in model.parameters():
             p.requires_grad = False
 
-        # Inject rank-0 GrowRA wrappers into the model
+        # Inject GrowRA wrappers into the model, at ``initial_rank``
         _inject_growra_inplace(
             model,
             scaling=scaling,
             dropout=dropout,
             use_dora=use_dora,
             target_modules=target_modules,
+            initial_rank=initial_rank,
         )
         self.model = model
         self._raw_scaling: float | Callable[[int], float] = scaling
@@ -377,6 +389,7 @@ def get_growra_model(
     dropout: float = 0.0,
     use_dora: bool = False,
     target_modules: list[str] | None = None,
+    initial_rank: int = 0,
     in_features: int | None = None,
     out_features: int | None = None,
     device: torch.device | str | None = None,
@@ -386,8 +399,8 @@ def get_growra_model(
     Analogous to PEFT's ``get_peft_model`` but returns a
     :class:`GrowRAModel` (a
     :class:`~gromo.containers.sequential_growing_container.SequentialGrowingModel`).
-    Rank starts at 0 and grows via the FOGRO pipeline — no ``rank``
-    argument is needed.
+    Rank starts at ``initial_rank`` (0 by default) and grows via the FOGRO
+    pipeline, so no ``rank`` argument is needed in the usual case.
 
     Parameters
     ----------
@@ -405,6 +418,11 @@ def get_growra_model(
     target_modules : list[str] | None
         Name filter for which layers to wrap. ``None`` wraps all linear / conv
         layers.
+    initial_rank : int
+        Rank each adapter starts at. Default ``0`` — the adapters grow from
+        nothing via the FOGRO pipeline. A seed rank ``> 0`` starts every
+        adapter as a no-op (Kaiming A, zero B), so the wrapped model still
+        reproduces the backbone exactly before any training.
     in_features : int | None
         Override for the model input dimension (inferred when ``None``).
     out_features : int | None
@@ -429,6 +447,7 @@ def get_growra_model(
         dropout=dropout,
         use_dora=use_dora,
         target_modules=target_modules,
+        initial_rank=initial_rank,
         in_features=in_features,
         out_features=out_features,
         device=device,

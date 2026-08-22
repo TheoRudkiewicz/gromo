@@ -727,6 +727,10 @@ class GrowRALinear(GrowRABlock, LinearGrowingBlock):
         self.dropout = dropout_module
         self.use_dora = False
         self.magnitude: nn.Parameter | None = None
+        # A seed rank must not perturb the pretrained model: Kaiming A, zero B.
+        # This has to happen before enable_dora, which snapshots ||W + BA||.
+        if rank > 0:
+            self.reset_adapter()
         if use_dora:
             self.enable_dora()
 
@@ -975,6 +979,10 @@ class GrowRAConv2d(GrowRABlock, Conv2dGrowingBlock):
         self.use_dora = False
         self.magnitude: nn.Parameter | None = None
         self.lr_init = lr_init
+        # A seed rank must not perturb the pretrained model: Kaiming A, zero B.
+        # This has to happen before enable_dora, which snapshots ||W + BA||.
+        if rank > 0:
+            self.reset_adapter()
         if use_dora:
             self.enable_dora()
 
