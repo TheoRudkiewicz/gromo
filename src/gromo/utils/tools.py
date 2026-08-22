@@ -14,7 +14,7 @@ from gromo.utils.tensor_statistic import TensorStatistic
 SpectrumThreshold = Callable[[torch.Tensor], float]
 ThresholdRule = Callable[[TensorStatistic, torch.Tensor], float]
 
-_KNOWN_THRESHOLD_RULES_TYPE = Literal["mean_over_sqrt_n"]
+KnownThresholdRuleName = Literal["mean_over_sqrt_n"]
 
 
 def _mean_over_sqrt_n_rule(statistic: TensorStatistic, spectrum: torch.Tensor) -> float:
@@ -35,21 +35,21 @@ def _mean_over_sqrt_n_rule(statistic: TensorStatistic, spectrum: torch.Tensor) -
     return spectrum.mean().item() / math.sqrt(max(statistic.samples, 1))
 
 
-KNOWN_THRESHOLD_RULES: dict[str, ThresholdRule] = {
+KNOWN_THRESHOLD_RULES: dict[KnownThresholdRuleName, ThresholdRule] = {
     "mean_over_sqrt_n": _mean_over_sqrt_n_rule,
 }
 
 
 def resolve_threshold_rule(
-    rule: _KNOWN_THRESHOLD_RULES_TYPE | ThresholdRule,
+    rule: KnownThresholdRuleName | ThresholdRule,
 ) -> ThresholdRule:
     """
     Get the threshold rule designated by a name, or the rule itself.
 
     Parameters
     ----------
-    rule: _KNOWN_THRESHOLD_RULES_TYPE | ThresholdRule
-        name of a rule of `KNOWN_THRESHOLD_RULES`, or a rule
+    rule: KnownThresholdRuleName | ThresholdRule
+        name of a rule of `KnownThresholdRuleName`, or a rule
 
     Returns
     -------

@@ -16,7 +16,7 @@ import torch
 from gromo.config.loader import load_config
 from gromo.utils.tensor_statistic import TensorStatistic
 from gromo.utils.tools import (
-    _KNOWN_THRESHOLD_RULES_TYPE,
+    KnownThresholdRuleName,
     SpectrumThreshold,
     ThresholdRule,
     compute_optimal_added_parameters,
@@ -65,14 +65,14 @@ def _shrink_psd_matrix(matrix: torch.Tensor, shrinkage: float) -> torch.Tensor:
 
 
 def _bind_threshold(
-    threshold: float | _KNOWN_THRESHOLD_RULES_TYPE | ThresholdRule,
+    threshold: float | KnownThresholdRuleName | ThresholdRule,
     statistic: TensorStatistic,
 ) -> float | SpectrumThreshold:
     """Bind a threshold rule to the statistic the thresholded matrix was estimated from.
 
     Parameters
     ----------
-    threshold: float | _KNOWN_THRESHOLD_RULES_TYPE | ThresholdRule
+    threshold: float | KnownThresholdRuleName | ThresholdRule
         a value, the name of a rule of `KNOWN_THRESHOLD_RULES`, or a rule
     statistic: TensorStatistic
         statistic the thresholded matrix was estimated from
@@ -2410,8 +2410,8 @@ class GrowingModule(torch.nn.Module):
 
     def _auxiliary_compute_alpha_omega(
         self,
-        numerical_threshold: float | _KNOWN_THRESHOLD_RULES_TYPE | ThresholdRule = 1e-6,
-        statistical_threshold: float | _KNOWN_THRESHOLD_RULES_TYPE | ThresholdRule = 1e-3,
+        numerical_threshold: float | KnownThresholdRuleName | ThresholdRule = 1e-6,
+        statistical_threshold: float | KnownThresholdRuleName | ThresholdRule = 1e-3,
         maximum_added_neurons: int | None = None,
         dtype: torch.dtype = torch.float32,
         use_covariance: bool = True,
@@ -2430,11 +2430,11 @@ class GrowingModule(torch.nn.Module):
 
         Parameters
         ----------
-        numerical_threshold: float | _KNOWN_THRESHOLD_RULES_TYPE | ThresholdRule
+        numerical_threshold: float | KnownThresholdRuleName | ThresholdRule
             threshold to consider an eigenvalue as zero in the square root of
             the inverse of S.
             When a rule is given it is bound to the previous module's ``tensor_s``.
-        statistical_threshold: float | _KNOWN_THRESHOLD_RULES_TYPE | ThresholdRule
+        statistical_threshold: float | KnownThresholdRuleName | ThresholdRule
             threshold to consider an eigenvalue as zero in the SVD of S{-1/2} N.
             When a rule is given it is bound to ``tensor_m_prev``.
         maximum_added_neurons: int | None
@@ -2510,15 +2510,15 @@ class GrowingModule(torch.nn.Module):
         # when that matrix is used: tensor_s_growth raises when there is none.
         spectra: dict[str, Any] | None = {} if collect_spectra else None
         if matrix_s is not None:
-            numercial_threshold_covariance = _bind_threshold(
+            numerical_threshold_covariance = _bind_threshold(
                 numerical_threshold, self.tensor_s_growth
             )
         else:
-            numercial_threshold_covariance = 0.0
+            numerical_threshold_covariance = 0.0
         alpha, omega, eigenvalues_extension = compute_optimal_added_parameters(
             matrix_s=matrix_s,
             matrix_n=matrix_n,
-            numerical_threshold=numercial_threshold_covariance,
+            numerical_threshold=numerical_threshold_covariance,
             statistical_threshold=_bind_threshold(
                 statistical_threshold, self.tensor_m_prev
             ),
@@ -2548,8 +2548,8 @@ class GrowingModule(torch.nn.Module):
 
     def _compute_optimal_added_parameters(
         self,
-        numerical_threshold: float | _KNOWN_THRESHOLD_RULES_TYPE | ThresholdRule = 1e-6,
-        statistical_threshold: float | _KNOWN_THRESHOLD_RULES_TYPE | ThresholdRule = 1e-3,
+        numerical_threshold: float | KnownThresholdRuleName | ThresholdRule = 1e-6,
+        statistical_threshold: float | KnownThresholdRuleName | ThresholdRule = 1e-3,
         maximum_added_neurons: int | None = None,
         update_previous: bool = True,
         dtype: torch.dtype = torch.float32,
@@ -2570,11 +2570,11 @@ class GrowingModule(torch.nn.Module):
 
         Parameters
         ----------
-        numerical_threshold: float | _KNOWN_THRESHOLD_RULES_TYPE | ThresholdRule
+        numerical_threshold: float | KnownThresholdRuleName | ThresholdRule
             threshold to consider an eigenvalue as zero in the square root of
             the inverse of S.
             When a rule is given it is bound to the previous module's ``tensor_s``.
-        statistical_threshold: float | _KNOWN_THRESHOLD_RULES_TYPE | ThresholdRule
+        statistical_threshold: float | KnownThresholdRuleName | ThresholdRule
             threshold to consider an eigenvalue as zero in the SVD of S{-1/2} N.
             When a rule is given it is bound to ``tensor_m_prev``.
         maximum_added_neurons: int | None
@@ -2660,8 +2660,8 @@ class GrowingModule(torch.nn.Module):
 
     def compute_optimal_updates(
         self,
-        numerical_threshold: float | _KNOWN_THRESHOLD_RULES_TYPE | ThresholdRule = 1e-6,
-        statistical_threshold: float | _KNOWN_THRESHOLD_RULES_TYPE | ThresholdRule = 1e-3,
+        numerical_threshold: float | KnownThresholdRuleName | ThresholdRule = 1e-6,
+        statistical_threshold: float | KnownThresholdRuleName | ThresholdRule = 1e-3,
         maximum_added_neurons: int | None = None,
         update_previous: bool = True,
         dtype: torch.dtype = torch.float32,
@@ -2703,11 +2703,11 @@ class GrowingModule(torch.nn.Module):
 
         Parameters
         ----------
-        numerical_threshold: float | _KNOWN_THRESHOLD_RULES_TYPE | ThresholdRule
+        numerical_threshold: float | KnownThresholdRuleName | ThresholdRule
             Threshold to consider an eigenvalue as zero in the square root of
             the inverse of S (covariance matrix).
             When a rule is given it is bound to the previous module's ``tensor_s``.
-        statistical_threshold: float | _KNOWN_THRESHOLD_RULES_TYPE | ThresholdRule
+        statistical_threshold: float | KnownThresholdRuleName | ThresholdRule
             Threshold to consider an eigenvalue as zero in the SVD of S^{-1/2} N.
             When a rule is given it is bound to ``tensor_m_prev``.
         maximum_added_neurons: int | None

@@ -5,7 +5,7 @@ import torch
 
 from gromo.modules.growing_module import GrowingModule, MergeGrowingModule
 from gromo.utils.tensor_statistic import TensorStatistic
-from gromo.utils.tools import _KNOWN_THRESHOLD_RULES_TYPE, ThresholdRule
+from gromo.utils.tools import KnownThresholdRuleName, ThresholdRule
 
 
 class LinearMergeGrowingModule(MergeGrowingModule):
@@ -928,8 +928,8 @@ class LinearGrowingModule(GrowingModule):
     # Optimal update computation
     def _compute_optimal_added_parameters(
         self,
-        numerical_threshold: float | _KNOWN_THRESHOLD_RULES_TYPE | ThresholdRule = 1e-6,
-        statistical_threshold: float | _KNOWN_THRESHOLD_RULES_TYPE | ThresholdRule = 1e-3,
+        numerical_threshold: float | KnownThresholdRuleName | ThresholdRule = 1e-6,
+        statistical_threshold: float | KnownThresholdRuleName | ThresholdRule = 1e-3,
         maximum_added_neurons: int | None = None,
         update_previous: bool = True,
         dtype: torch.dtype = torch.float32,
@@ -949,10 +949,10 @@ class LinearGrowingModule(GrowingModule):
 
         Parameters
         ----------
-        numerical_threshold: float | _KNOWN_THRESHOLD_RULES_TYPE | ThresholdRule
+        numerical_threshold: float | KnownThresholdRuleName | ThresholdRule
             threshold to consider an eigenvalue as zero in the square root of the inverse of S.
             When a rule is given it is bound to the previous module's ``tensor_s``.
-        statistical_threshold: float | _KNOWN_THRESHOLD_RULES_TYPE | ThresholdRule
+        statistical_threshold: float | KnownThresholdRuleName | ThresholdRule
             threshold to consider an eigenvalue as zero in the SVD of S{-1/2} N.
             When a rule is given it is bound to ``tensor_m_prev``.
         maximum_added_neurons: int | None
