@@ -25,7 +25,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F  # noqa: N812
 
-from gromo.containers.growing_block import Conv2dGrowingBlock, LinearGrowingBlock
+from gromo.containers.growing_block import (
+    Conv2dGrowingBlock,
+    GrowingBlock,
+    LinearGrowingBlock,
+)
 from gromo.modules.conv2d_growing_module import Conv2dGrowingModule
 from gromo.modules.growing_module import SupportsExtendedForward
 from gromo.modules.linear_growing_module import LinearGrowingModule
@@ -90,7 +94,268 @@ def _deepcopy_growra_module(self, memo: dict):
     return result
 
 
-class GrowRALinear(LinearGrowingBlock):
+class GrowRABlock(GrowingBlock):
+    """Behaviour shared by :class:`GrowRALinear` and :class:`GrowRAConv2d`.
+
+    The two blocks differ only in tensor rank, never in structure.  In both, the
+    rank axis is dim 0 of the A factor (``(rank, fan_in, ...)``) and dim 1 of the
+    B factor (``(fan_out, rank, ...)``), every remaining axis being a fan axis.
+    Reducing "every axis except the rank axis" therefore expresses the paper
+    Section A.5 rescale once instead of once per layer type.
+
+    Subclasses provide ``__init__`` and the layer-type-specific weight handling
+    (``weight``, ``_weight_norm``, ``_delta_weight``, ``forward``, ``merge``, ...);
+    everything that only needs ``first_layer`` / ``second_layer`` lives here.
+    This is a base class, not a mixin, so that overrides of ``GrowingBlock``
+    methods -- ``apply_change`` here, ``normalize_optimal_updates`` later -- are
+    genuine overrides with compatible signatures rather than a second, unrelated
+    definition of the same name.
+    """
+
+    # Set by the subclass ``__init__``; declared here for the methods below.
+    lr_init: float
+    use_dora: bool
+    magnitude: nn.Parameter | None
+    scaling_fn: Callable[[int], float]
+    # The frozen original layer, which the subclasses also alias as ``self.linear``
+    # / ``self.conv``.  Narrowed from ``GrowingBlock.downsample: nn.Module`` so
+    # that ``weight`` and ``bias`` below resolve to real attributes instead of
+    # going through ``nn.Module.__getattr__``.
+    downsample: _LinearLayerType | _Conv2dLayerType
+
+    @property
+    def weight(self) -> torch.Tensor:
+        """Original weight (read-only)."""
+        return self.downsample.weight
+
+    @property
+    def bias(self) -> torch.Tensor | None:
+        """Original bias (read-only)."""
+        return self.downsample.bias
+
+    @property
+    def rank(self) -> int:
+        """Current rank: the number of hidden neurons of the adapter."""
+        return self.hidden_neurons
+
+    @property
+    def scaling(self) -> float:
+        """Effective scaling factor applied to the adapter output."""
+        if self.rank == 0:
+            return 0.0
+        return self.scaling_fn(self.rank)
+
+    # Layer-type-specific hooks used by the shared methods below.  They must be
+    # declared here and not merely implemented by the subclasses: on an
+    # ``nn.Module`` any undeclared attribute resolves through ``__getattr__`` to
+    # ``Tensor | Module``, which makes calling it a type error.
+
+    def _weight_norm(self, weight: torch.Tensor) -> torch.Tensor:
+        """Return the per-output-unit norm of ``weight``, clamped away from zero.
+
+        Parameters
+        ----------
+        weight : torch.Tensor
+            Effective weight of the wrapped layer.
+
+        Returns
+        -------
+        torch.Tensor
+            One norm per output unit, shaped to broadcast over ``weight``.
+
+        Raises
+        ------
+        NotImplementedError
+            Always; subclasses must provide the layer-type-specific reduction.
+        """
+        raise NotImplementedError
+
+    def _delta_weight(self, detach_adapter: bool = False) -> torch.Tensor:
+        """Return the adapter contribution ``scaling * B @ A`` as a weight delta.
+
+        Parameters
+        ----------
+        detach_adapter : bool
+            If ``True``, detach A and B so no gradient flows through the delta.
+
+        Returns
+        -------
+        torch.Tensor
+            Delta with the same shape as the wrapped layer's weight.
+
+        Raises
+        ------
+        NotImplementedError
+            Always; subclasses must provide the layer-type-specific product.
+        """
+        raise NotImplementedError
+
+    @staticmethod
+    def _rank_norms(weight: torch.Tensor, rank_dim: int) -> torch.Tensor:
+        """Return the L2 norm of each rank, reducing every axis but ``rank_dim``.
+
+        Parameters
+        ----------
+        weight : torch.Tensor
+            A or B factor, of any tensor rank.
+        rank_dim : int
+            Axis carrying the ranks: 0 for A, 1 for B.
+
+        Returns
+        -------
+        torch.Tensor
+            One norm per rank, of shape ``(weight.shape[rank_dim],)``.
+        """
+        dims = tuple(d for d in range(weight.dim()) if d != rank_dim)
+        return torch.linalg.vector_norm(weight, dim=dims)
+
+    @classmethod
+    def _rank_norms_for_scaling(cls, weight: torch.Tensor, rank_dim: int) -> torch.Tensor:
+        """Per-rank norms shaped to broadcast over ``weight``, with zeros mapped to one.
+
+        A rank that is exactly zero -- from ``alpha_zero`` / ``omega_zero``, or
+        from a zero singular value -- must come out of normalization still zero
+        rather than NaN.  Mapping its norm to one achieves that for both factors:
+        dividing zero by one leaves zero, and multiplying zero by any target
+        leaves zero.
+
+        Parameters
+        ----------
+        weight : torch.Tensor
+            A or B factor.
+        rank_dim : int
+            Axis carrying the ranks: 0 for A, 1 for B.
+
+        Returns
+        -------
+        torch.Tensor
+            Norms of shape ``(1, ..., rank, ..., 1)``, broadcastable over ``weight``.
+        """
+        norms = cls._rank_norms(weight, rank_dim)
+        norms = torch.where(norms > 0, norms, torch.ones_like(norms))
+        broadcast_shape = [1] * weight.dim()
+        broadcast_shape[rank_dim] = weight.shape[rank_dim]
+        return norms.view(broadcast_shape)
+
+    @torch.no_grad()
+    def _normalize_new_ranks(self, old_rank: int) -> None:
+        """Rescale the newly added ranks per GrowRA paper Section A.5.
+
+        This is a *normalization*, not an initialization: every value it touches
+        was computed by ``compute_optimal_updates`` and only its magnitude
+        changes, never its direction.
+
+        - Each new A row is rescaled so ``var(A_ij) = 1/fan_in`` (linear Kaiming,
+          there being no nonlinearity between A and B), giving ``||A_row|| = 1``.
+        - Each new B column is rescaled so ``var(B_ij) = lr_init`` (paper Section
+          A.5: "scale B to have variance eta"), giving
+          ``||B_col|| = sqrt(fan_out * lr_init)``.
+
+        Parameters
+        ----------
+        old_rank : int
+            Rank of the adapter before the extension was merged; the ranks from
+            ``old_rank`` onwards are the new ones.
+        """
+        if self.rank <= old_rank:
+            return
+        else:
+            # The two factors are divided and multiplied respectively rather
+            # than sharing one operation: that is bit-for-bit what the per-rank
+            # loops this replaces did, so the refactor cannot move any number.
+            a_new = self.first_layer.weight[old_rank:]
+            a_new.div_(self._rank_norms_for_scaling(a_new, 0))
+
+            b_new = self.second_layer.weight[:, old_rank:]
+            # ``fan_out = b_new.shape[0]`` only holds because every axis after
+            # the rank axis is a singleton (a 1x1 kernel for GrowRAConv2d);
+            # otherwise the per-rank norm would span fan_out * kH * kW entries.
+            assert all(size == 1 for size in b_new.shape[2:]), (
+                f"B must have a 1x1 kernel to derive fan_out, got {tuple(b_new.shape)}"
+            )
+            target = (b_new.shape[0] * self.lr_init) ** 0.5
+            b_new.mul_(target / self._rank_norms_for_scaling(b_new, 1))
+
+    def apply_change(
+        self,
+        extension_size: int | None = None,
+        scaling_factor: float | torch.Tensor | None = None,
+        apply_delta: bool = True,
+        apply_extension: bool = True,
+        *,
+        lr_init: float | None = None,
+        reinit_extension: bool = True,
+    ) -> None:
+        """Apply the pending change, then normalize the ranks it added.
+
+        The first four parameters are those of ``GrowingBlock.apply_change`` and
+        are forwarded unchanged; the two keyword-only ones are GrowRA-specific
+        and consumed here, the base method rejecting them.
+
+        Parameters
+        ----------
+        extension_size : int | None
+            Number of new ranks to merge, see ``GrowingBlock.apply_change``.
+        scaling_factor : float | torch.Tensor | None
+            Scaling applied to the update, see ``GrowingBlock.apply_change``.
+        apply_delta : bool
+            Whether to apply the optimal delta, see ``GrowingBlock.apply_change``.
+        apply_extension : bool
+            Whether to merge the extension, see ``GrowingBlock.apply_change``.
+        lr_init : float | None
+            Overrides ``self.lr_init``, the variance targeted for the new B
+            columns by ``_normalize_new_ranks``.  ``None`` keeps the current value.
+        reinit_extension : bool
+            Whether the newly grown ranks are rescaled by
+            ``_normalize_new_ranks`` (paper A.5 variance-eta normalization).
+            ``False`` keeps the optimal magnitudes produced by the base
+            ``apply_change`` (legacy <=819a23c behaviour).
+        """
+        if lr_init is not None:
+            self.lr_init = lr_init
+        old_rank = self.rank
+        super().apply_change(
+            extension_size=extension_size,
+            scaling_factor=scaling_factor,
+            apply_delta=apply_delta,
+            apply_extension=apply_extension,
+        )
+        if reinit_extension and apply_extension:
+            self._normalize_new_ranks(old_rank)
+
+    def enable_dora(self) -> None:
+        """Enable DoRA magnitude reparameterization."""
+        if self.use_dora:
+            return
+        self.use_dora = True
+        with torch.no_grad():
+            magnitude = self._weight_norm(self.weight + self._delta_weight()).reshape(-1)
+        self.magnitude = nn.Parameter(magnitude.clone())
+
+    def reset_adapter(self) -> None:
+        """Reset adapter to zero output."""
+        nn.init.kaiming_uniform_(self.first_layer.weight)
+        nn.init.zeros_(self.second_layer.weight)
+
+    def growra_parameters(self) -> list[nn.Parameter]:
+        """Return only the trainable adapter parameters (A and B layers).
+
+        Returns
+        -------
+        list[nn.Parameter]
+            Adapter parameters, including the DoRA magnitude when enabled.
+        """
+        params = list(self.first_layer.parameters()) + list(
+            self.second_layer.parameters()
+        )
+        if self.use_dora and self.magnitude is not None:
+            params.append(self.magnitude)
+        return params
+
+    __deepcopy__ = _deepcopy_growra_module
+
+
+class GrowRALinear(GrowRABlock, LinearGrowingBlock):
     """GrowRA block for nn.Linear (or LinearGrowingModule).
 
     The decomposition is ``W_original + scaling * B @ A`` where A and B
@@ -185,28 +450,6 @@ class GrowRALinear(LinearGrowingBlock):
         if use_dora:
             self.enable_dora()
 
-    @property
-    def rank(self) -> int:
-        """Current rank (hidden dimension)."""
-        return self.hidden_neurons
-
-    @property
-    def scaling(self) -> float:
-        """Effective scaling factor applied to the adapter output."""
-        if self.rank == 0:
-            return 0.0
-        return self.scaling_fn(self.rank)
-
-    @property
-    def weight(self) -> torch.Tensor:
-        """Original weight (read-only)."""
-        return self.linear.weight
-
-    @property
-    def bias(self) -> torch.Tensor | None:
-        """Original bias (read-only)."""
-        return self.linear.bias
-
     def _weight_norm(self, weight: torch.Tensor) -> torch.Tensor:
         return weight.norm(dim=1, keepdim=True).clamp_min(torch.finfo(weight.dtype).eps)
 
@@ -231,17 +474,6 @@ class GrowRALinear(LinearGrowingBlock):
             return weight
         assert self.magnitude is not None
         return self.magnitude[:, None] * (weight / self._weight_norm(weight).detach())
-
-    def enable_dora(self) -> None:
-        """Enable DoRA magnitude reparameterization."""
-        if self.use_dora:
-            return
-        self.use_dora = True
-        with torch.no_grad():
-            magnitude = self._weight_norm(
-                self.linear.weight + self._delta_weight()
-            ).squeeze(1)
-        self.magnitude = nn.Parameter(magnitude.clone())
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward: ``original(x) + scaling * B(A(x))``.
@@ -307,53 +539,6 @@ class GrowRALinear(LinearGrowingBlock):
             return F.linear(x, W_dora, self.linear.bias)
         return super().extended_forward(x)
 
-    def _post_extension_init(self, old_rank: int) -> None:
-        """Re-initialize new adapter weights per GrowRA paper Section A.5.
-
-        After extension, the newly added weights are re-initialized:
-        - Each new A row is rescaled so ``var(A_ij) = 1/fan_in``
-          (linear Kaiming, no nonlinearity between A and B), giving ``‖A_row‖ = 1``.
-        - Each new B column is rescaled so ``var(B_ij) = lr_init``
-          (paper Section A.5: "scale B to have variance η"), giving
-          ``‖B_col‖ = sqrt(fan_out * lr_init)``.
-        """
-        if self.rank <= old_rank:
-            return
-        with torch.no_grad():
-            A_new = self.first_layer.weight[old_rank:]  # (added, fan_in)
-            for i in range(A_new.shape[0]):
-                n = A_new[i].norm()
-                if n > 0:
-                    A_new[i].div_(n)  # ||row|| = 1 → var = 1/fan_in
-
-            B_new = self.second_layer.weight[:, old_rank:]  # (fan_out, added)
-            fan_out = B_new.shape[0]
-            target = (fan_out * self.lr_init) ** 0.5  # ||col|| = sqrt(fan_out * lr)
-            for i in range(B_new.shape[1]):
-                n = B_new[:, i].norm()
-                if n > 0:
-                    B_new[:, i].mul_(target / n)
-
-    def apply_change(self, **kwargs):
-        """Apply change and re-initialize new adapter weights.
-
-        ``lr_init`` (if given) overrides the variance used to rescale new B
-        columns in ``_post_extension_init``; it is consumed here rather than
-        forwarded to the base ``GrowingBlock.apply_change``, which rejects it.
-
-        ``reinit_extension`` (default ``True``) controls whether the newly
-        grown columns are rescaled by ``_post_extension_init`` (paper A.5
-        variance-eta init). Set ``False`` to keep the optimal magnitudes
-        produced by the base ``apply_change`` (legacy <=819a23c behaviour).
-        """
-        if "lr_init" in kwargs:
-            self.lr_init = kwargs.pop("lr_init")
-        reinit_extension = kwargs.pop("reinit_extension", True)
-        old_rank = self.rank
-        super().apply_change(**kwargs)
-        if reinit_extension and kwargs.get("apply_extension", True):
-            self._post_extension_init(old_rank)
-
     def merge(self) -> nn.Linear:
         """Merge adapter into the original layer.
 
@@ -375,22 +560,6 @@ class GrowRALinear(LinearGrowingBlock):
                 merged.bias.copy_(self.linear.bias)
         return merged
 
-    def growra_parameters(self) -> list[nn.Parameter]:
-        """Return only the trainable adapter parameters (A and B layers)."""
-        params = list(self.first_layer.parameters()) + list(
-            self.second_layer.parameters()
-        )
-        if self.use_dora and self.magnitude is not None:
-            params.append(self.magnitude)
-        return params
-
-    def reset_adapter(self) -> None:
-        """Reset adapter to zero output."""
-        nn.init.kaiming_uniform_(self.first_layer.weight)
-        nn.init.zeros_(self.second_layer.weight)
-
-    __deepcopy__ = _deepcopy_growra_module
-
     def extra_repr(self) -> str:
         """Return extra representation string."""
         dropout_p = self.dropout.p
@@ -406,7 +575,7 @@ class GrowRALinear(LinearGrowingBlock):
         return s
 
 
-class GrowRAConv2d(Conv2dGrowingBlock):
+class GrowRAConv2d(GrowRABlock, Conv2dGrowingBlock):
     """GrowRA wrapper for nn.Conv2d (or Conv2dGrowingModule).
 
     The decomposition is ``Conv_original(x) + scaling * B(A(x))``
@@ -529,28 +698,6 @@ class GrowRAConv2d(Conv2dGrowingBlock):
         if use_dora:
             self.enable_dora()
 
-    @property
-    def rank(self) -> int:
-        """Current rank (hidden channels)."""
-        return self.hidden_neurons
-
-    @property
-    def scaling(self) -> float:
-        """Effective scaling factor applied to the adapter output."""
-        if self.rank == 0:
-            return 0.0
-        return self.scaling_fn(self.rank)
-
-    @property
-    def weight(self) -> torch.Tensor:
-        """Original weight (read-only)."""
-        return self.conv.weight
-
-    @property
-    def bias(self) -> torch.Tensor | None:
-        """Original bias (read-only)."""
-        return self.conv.bias
-
     def _conv_base(self) -> nn.Conv2d:
         if isinstance(self.conv, Conv2dGrowingModule):
             return self.conv.layer
@@ -594,17 +741,6 @@ class GrowRAConv2d(Conv2dGrowingBlock):
         return self.magnitude[:, None, None, None] * (
             weight / self._weight_norm(weight).detach()
         )
-
-    def enable_dora(self) -> None:
-        """Enable DoRA magnitude reparameterization."""
-        if self.use_dora:
-            return
-        self.use_dora = True
-        with torch.no_grad():
-            magnitude = self._weight_norm(
-                self._conv_base().weight + self._delta_weight()
-            ).reshape(-1)
-        self.magnitude = nn.Parameter(magnitude.clone())
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward: ``conv(x) + scaling * B(A(x))``.
@@ -698,49 +834,6 @@ class GrowRAConv2d(Conv2dGrowingBlock):
             )
         return super().extended_forward(x)
 
-    def _post_extension_init(self, old_rank: int) -> None:
-        """Re-initialize new adapter weights per GrowRA paper Section A.5.
-
-        Convolutional variant: ``fan_in = in_channels * kH * kW`` from the A (first) layer.
-        """
-        if self.rank <= old_rank:
-            return
-        A_w = self.first_layer.weight  # (new_rank, in_ch, kH, kW)
-        with torch.no_grad():
-            A_new = A_w[old_rank:]  # (added, in_ch, kH, kW)
-            for i in range(A_new.shape[0]):
-                n = A_new[i].norm()
-                if n > 0:
-                    A_new[i].div_(n)  # ||row|| = 1 → var = 1/fan_in
-
-            B_new = self.second_layer.weight[:, old_rank:]  # (out_ch, added, 1, 1)
-            fan_out = B_new.shape[0]
-            target = (fan_out * self.lr_init) ** 0.5  # ||col|| = sqrt(fan_out * lr)
-            for i in range(B_new.shape[1]):
-                n = B_new[:, i].norm()
-                if n > 0:
-                    B_new[:, i].mul_(target / n)
-
-    def apply_change(self, **kwargs):
-        """Apply change and re-initialize new adapter weights.
-
-        ``lr_init`` (if given) overrides the variance used to rescale new B
-        columns in ``_post_extension_init``; it is consumed here rather than
-        forwarded to the base ``GrowingBlock.apply_change``, which rejects it.
-
-        ``reinit_extension`` (default ``True``) controls whether the newly
-        grown columns are rescaled by ``_post_extension_init`` (paper A.5
-        variance-eta init). Set ``False`` to keep the optimal magnitudes
-        produced by the base ``apply_change`` (legacy <=819a23c behaviour).
-        """
-        if "lr_init" in kwargs:
-            self.lr_init = kwargs.pop("lr_init")
-        reinit_extension = kwargs.pop("reinit_extension", True)
-        old_rank = self.rank
-        super().apply_change(**kwargs)
-        if reinit_extension and kwargs.get("apply_extension", True):
-            self._post_extension_init(old_rank)
-
     def merge(self) -> nn.Conv2d:
         """Merge adapter into the original convolution layer.
 
@@ -770,22 +863,6 @@ class GrowRAConv2d(Conv2dGrowingBlock):
             if orig.bias is not None:
                 merged.bias.copy_(orig.bias)
         return merged
-
-    def growra_parameters(self) -> list[nn.Parameter]:
-        """Return only the trainable adapter parameters (A and B layers)."""
-        params = list(self.first_layer.parameters()) + list(
-            self.second_layer.parameters()
-        )
-        if self.use_dora and self.magnitude is not None:
-            params.append(self.magnitude)
-        return params
-
-    def reset_adapter(self) -> None:
-        """Reset adapter to zero output."""
-        nn.init.kaiming_uniform_(self.first_layer.weight)
-        nn.init.zeros_(self.second_layer.weight)
-
-    __deepcopy__ = _deepcopy_growra_module
 
     def extra_repr(self) -> str:
         """Return extra representation string."""

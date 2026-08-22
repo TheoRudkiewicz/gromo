@@ -499,7 +499,7 @@ class TestFOGROGrowthPipeline(TestCase):
         lora.reset_computation()
 
     def test_apply_change_no_extension(self):
-        """apply_change(apply_extension=False) skips _post_extension_init."""
+        """apply_change(apply_extension=False) skips _normalize_new_ranks."""
         lora = self._make_lora(rank=0)
         lora.init_computation()
         x = _randn(self.batch_size, self.in_features)
@@ -522,12 +522,14 @@ class TestFOGROGrowthPipeline(TestCase):
         self.assertEqual(lora.rank, rank_before)
         lora.reset_computation()
 
-    def test_post_extension_init_noop_without_growth(self):
-        """_post_extension_init is a no-op when rank did not increase."""
+    def test_normalize_new_ranks_noop_without_growth(self):
+        """_normalize_new_ranks is a no-op when rank did not increase."""
         lora = self._make_lora(rank=2)
-        weight_before = lora.first_layer.weight.clone()
-        lora._post_extension_init(old_rank=lora.rank)
-        self.assertTrue(torch.equal(lora.first_layer.weight, weight_before))
+        a_before = lora.first_layer.weight.clone()
+        b_before = lora.second_layer.weight.clone()
+        lora._normalize_new_ranks(old_rank=lora.rank)
+        self.assertTrue(torch.equal(lora.first_layer.weight, a_before))
+        self.assertTrue(torch.equal(lora.second_layer.weight, b_before))
 
     def test_apply_change_lr_init_override(self):
         """apply_change(lr_init=...) overrides self.lr_init and is consumed
@@ -925,7 +927,7 @@ class TestGrowingGrowraConv2dFOGRO(TestCase):
         self.assertEqual(out.shape, (2, 8, 8, 8))
 
     def test_apply_change_no_extension(self):
-        """apply_change(apply_extension=False) skips _post_extension_init."""
+        """apply_change(apply_extension=False) skips _normalize_new_ranks."""
         conv = _conv2d(3, 8, kernel_size=3, padding=1)
         lora = GrowRAConv2d(conv, rank=0)
         lora.init_computation()
@@ -948,13 +950,15 @@ class TestGrowingGrowraConv2dFOGRO(TestCase):
         self.assertEqual(lora.rank, rank_before)
         lora.reset_computation()
 
-    def test_post_extension_init_noop_without_growth(self):
-        """_post_extension_init is a no-op when rank did not increase."""
+    def test_normalize_new_ranks_noop_without_growth(self):
+        """_normalize_new_ranks is a no-op when rank did not increase."""
         conv = _conv2d(3, 8, kernel_size=3, padding=1)
         lora = GrowRAConv2d(conv, rank=2)
-        weight_before = lora.first_layer.weight.clone()
-        lora._post_extension_init(old_rank=lora.rank)
-        self.assertTrue(torch.equal(lora.first_layer.weight, weight_before))
+        a_before = lora.first_layer.weight.clone()
+        b_before = lora.second_layer.weight.clone()
+        lora._normalize_new_ranks(old_rank=lora.rank)
+        self.assertTrue(torch.equal(lora.first_layer.weight, a_before))
+        self.assertTrue(torch.equal(lora.second_layer.weight, b_before))
 
     def test_apply_change_lr_init_override(self):
         """apply_change(lr_init=...) overrides self.lr_init and is consumed
@@ -2280,7 +2284,7 @@ class _Case(NamedTuple):
 class TestGrowRANormalizationTargets(TorchTestCase):
     """Pin the numerical result of the GrowRA paper Section A.5 rescale.
 
-    ``_post_extension_init`` rescales each new A row to unit norm and each new
+    ``_normalize_new_ranks`` rescales each new A row to unit norm and each new
     B column to ``sqrt(fan_out * lr_init)``.  Nothing asserted this before;
     these tests exist so the planned pre-merge refactor of that rescale has a
     numerical contract to preserve.
@@ -2518,3 +2522,48 @@ class TestGrowRANormalizationTargets(TorchTestCase):
             torch.allclose(ratio, torch.ones_like(ratio), atol=1e-3),
             f"||A row|| / sqrt(sigma) unexpectedly equals 1: {ratio.tolist()}",
         )
+
+    # ---- the guard the vectorized rewrite has to keep ----
+
+    def test_zero_ranks_survive_normalization(self):
+        """A rank that is exactly zero stays zero instead of turning into NaN.
+
+        The per-rank ``if norm > 0`` guards became a single masked division, so
+        this pins the case produced by ``alpha_zero`` / ``omega_zero`` and by a
+        zero singular value.  Both factors are checked at once: a zero A row and
+        a zero B column, alongside ranks that must still reach their target.
+        """
+        zero_a, zero_b = 1, 2
+        for name, block, fan_out in (
+            ("linear", GrowRALinear(_linear(8, 6), rank=4), 6),
+            ("conv2d", GrowRAConv2d(_conv2d(3, 5, kernel_size=3, padding=1), rank=4), 5),
+        ):
+            with self.subTest(layer=name):
+                block.lr_init = self.lr_init
+                with torch.no_grad():
+                    nn.init.normal_(block.first_layer.weight)
+                    nn.init.normal_(block.second_layer.weight)
+                    block.first_layer.weight[zero_a].zero_()
+                    block.second_layer.weight[:, zero_b].zero_()
+
+                block._normalize_new_ranks(old_rank=0)
+
+                a_norms = _rank_norms(block.first_layer.weight, rank_dim=0)
+                b_norms = _rank_norms(block.second_layer.weight, rank_dim=1)
+                self.assertFalse(a_norms.isnan().any(), f"NaN in A: {a_norms.tolist()}")
+                self.assertFalse(b_norms.isnan().any(), f"NaN in B: {b_norms.tolist()}")
+
+                target = (fan_out * self.lr_init) ** 0.5
+                expected_a = torch.ones_like(a_norms)
+                expected_a[zero_a] = 0.0
+                expected_b = torch.full_like(b_norms, target)
+                expected_b[zero_b] = 0.0
+                self.assertAllClose(
+                    a_norms, expected_a, atol=1e-5, message="zeroed A row must stay zero"
+                )
+                self.assertAllClose(
+                    b_norms,
+                    expected_b,
+                    atol=1e-5,
+                    message="zeroed B column must stay zero",
+                )
