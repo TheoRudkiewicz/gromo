@@ -18,7 +18,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F  # noqa: N812
 
-from gromo.containers.growing_block import LinearGrowingBlock
+from gromo.containers.growing_block import GrowingBlock, LinearGrowingBlock
 from gromo.growra.container import (
     get_growra_model,
     get_growra_modules,
@@ -523,11 +523,12 @@ class TestFOGROGrowthPipeline(TestCase):
         lora.reset_computation()
 
     def test_normalize_new_ranks_noop_without_growth(self):
-        """_normalize_new_ranks is a no-op when rank did not increase."""
+        """_normalize_new_ranks is a no-op when nothing is pending."""
         lora = self._make_lora(rank=2)
+        self.assertFalse(lora._has_pending_extensions())
         a_before = lora.first_layer.weight.clone()
         b_before = lora.second_layer.weight.clone()
-        lora._normalize_new_ranks(old_rank=lora.rank)
+        lora._normalize_new_ranks()
         self.assertTrue(torch.equal(lora.first_layer.weight, a_before))
         self.assertTrue(torch.equal(lora.second_layer.weight, b_before))
 
@@ -951,12 +952,13 @@ class TestGrowingGrowraConv2dFOGRO(TestCase):
         lora.reset_computation()
 
     def test_normalize_new_ranks_noop_without_growth(self):
-        """_normalize_new_ranks is a no-op when rank did not increase."""
+        """_normalize_new_ranks is a no-op when nothing is pending."""
         conv = _conv2d(3, 8, kernel_size=3, padding=1)
         lora = GrowRAConv2d(conv, rank=2)
+        self.assertFalse(lora._has_pending_extensions())
         a_before = lora.first_layer.weight.clone()
         b_before = lora.second_layer.weight.clone()
-        lora._normalize_new_ranks(old_rank=lora.rank)
+        lora._normalize_new_ranks()
         self.assertTrue(torch.equal(lora.first_layer.weight, a_before))
         self.assertTrue(torch.equal(lora.second_layer.weight, b_before))
 
@@ -2292,7 +2294,7 @@ class TestGrowRANormalizationTargets(TorchTestCase):
 
     lr_init = 0.05
 
-    def _grow(self, block, x, keep, **kwargs):
+    def _grow(self, block, x, keep, scaling_factor=1.0, **kwargs):
         """Run one growth step and return what the merge consumed.
 
         Returns ``(old_rank, pending_a, pending_b, sigma)``, captured after
@@ -2322,7 +2324,9 @@ class TestGrowRANormalizationTargets(TorchTestCase):
         sigma = block.eigenvalues_extension.detach().clone()
 
         old_rank = block.rank
-        block.apply_change(scaling_factor=1.0, extension_size=keep, lr_init=self.lr_init)
+        block.apply_change(
+            scaling_factor=scaling_factor, extension_size=keep, lr_init=self.lr_init
+        )
         block.reset_computation()
         return old_rank, pending_a, pending_b, sigma
 
@@ -2535,21 +2539,30 @@ class TestGrowRANormalizationTargets(TorchTestCase):
         """
         zero_a, zero_b = 1, 2
         for name, block, fan_out in (
-            ("linear", GrowRALinear(_linear(8, 6), rank=4), 6),
-            ("conv2d", GrowRAConv2d(_conv2d(3, 5, kernel_size=3, padding=1), rank=4), 5),
+            ("linear", GrowRALinear(_linear(8, 6), rank=0), 6),
+            ("conv2d", GrowRAConv2d(_conv2d(3, 5, kernel_size=3, padding=1), rank=0), 5),
         ):
             with self.subTest(layer=name):
                 block.lr_init = self.lr_init
+                block.allocate_layer_extensions(extension_size=4)
+                assert isinstance(
+                    block.first_layer.extended_output_layer, type(block.downsample)
+                )
+                assert isinstance(
+                    block.second_layer.extended_input_layer, type(block.downsample)
+                )
+                a_ext = block.first_layer.extended_output_layer.weight
+                b_ext = block.second_layer.extended_input_layer.weight
                 with torch.no_grad():
-                    nn.init.normal_(block.first_layer.weight)
-                    nn.init.normal_(block.second_layer.weight)
-                    block.first_layer.weight[zero_a].zero_()
-                    block.second_layer.weight[:, zero_b].zero_()
+                    nn.init.normal_(a_ext)
+                    nn.init.normal_(b_ext)
+                    a_ext[zero_a].zero_()
+                    b_ext[:, zero_b].zero_()
 
-                block._normalize_new_ranks(old_rank=0)
+                block._normalize_new_ranks()
 
-                a_norms = _rank_norms(block.first_layer.weight, rank_dim=0)
-                b_norms = _rank_norms(block.second_layer.weight, rank_dim=1)
+                a_norms = _rank_norms(a_ext, rank_dim=0)
+                b_norms = _rank_norms(b_ext, rank_dim=1)
                 self.assertFalse(a_norms.isnan().any(), f"NaN in A: {a_norms.tolist()}")
                 self.assertFalse(b_norms.isnan().any(), f"NaN in B: {b_norms.tolist()}")
 
@@ -2567,3 +2580,151 @@ class TestGrowRANormalizationTargets(TorchTestCase):
                     atol=1e-5,
                     message="zeroed B column must stay zero",
                 )
+
+    # ---- the move itself: pre-merge must equal post-merge ----
+
+    @staticmethod
+    def _legacy_post_merge_apply_change(
+        block, extension_size, lr_init, scaling_factor=1.0
+    ):
+        """Reproduce the pre-N1 sequence: merge first, *then* rescale the merged slice.
+
+        ``GrowingBlock.apply_change`` is called unbound so that ``GrowRABlock``'s
+        override -- which now normalizes before merging -- is bypassed.  The
+        rescale below is the pre-N1 body verbatim, per-element loops included.
+        """
+        block.lr_init = lr_init
+        old_rank = block.rank
+        GrowingBlock.apply_change(
+            block,
+            extension_size=extension_size,
+            scaling_factor=scaling_factor,
+            apply_delta=False,
+        )
+        if block.rank <= old_rank:
+            return
+        with torch.no_grad():
+            a_new = block.first_layer.weight[old_rank:]
+            for i in range(a_new.shape[0]):
+                n = a_new[i].norm()
+                if n > 0:
+                    a_new[i].div_(n)
+            b_new = block.second_layer.weight[:, old_rank:]
+            target = (b_new.shape[0] * lr_init) ** 0.5
+            for i in range(b_new.shape[1]):
+                n = b_new[:, i].norm()
+                if n > 0:
+                    b_new[:, i].mul_(target / n)
+
+    def _grown_weights(self, factory, legacy, **grow_kwargs):
+        """Grow one block and return its merged (A, B); ``legacy`` picks the order."""
+        case = factory()
+        block, keep = case.block, case.keep
+        options = dict(
+            compute_delta=False,
+            use_covariance=True,
+            use_projection=False,
+            alpha_zero=False,
+            omega_zero=False,
+            ignore_singular_values=False,
+            use_fisher=True,
+        )
+        options.update(grow_kwargs)
+        block.init_computation()
+        block.zero_grad()
+        (block(case.x) ** 2).sum().backward()
+        block.update_computation()
+        block.compute_optimal_updates(maximum_added_neurons=keep + 1, **options)
+        block.sub_select_optimal_added_parameters(keep_neurons=keep)
+        if legacy:
+            self._legacy_post_merge_apply_change(block, keep, self.lr_init)
+        else:
+            block.apply_change(
+                extension_size=keep,
+                scaling_factor=1.0,
+                apply_delta=False,
+                lr_init=self.lr_init,
+            )
+        block.reset_computation()
+        return (
+            block.first_layer.weight.detach().clone(),
+            block.second_layer.weight.detach().clone(),
+        )
+
+    def test_pre_merge_equals_post_merge(self):
+        """Normalizing before the merge gives exactly the pre-N1 weights.
+
+        This is the whole justification for moving the rescale: the merge is a
+        concatenation and the rescale is elementwise on the new ranks, so with
+        ``scaling_factor=1`` they commute.  Asserted bit-for-bit -- an
+        ``allclose`` here would hide precisely the kind of drift that silently
+        invalidates a training run.
+        """
+        for name, factory in self._both():
+            for fisher in (True, False):
+                for ignore_sv in (True, False):
+                    with self.subTest(layer=name, fisher=fisher, ignore_sv=ignore_sv):
+                        kw = dict(use_fisher=fisher, ignore_singular_values=ignore_sv)
+                        new = self._grown_weights(factory, legacy=False, **kw)
+                        old = self._grown_weights(factory, legacy=True, **kw)
+                        for factor, a, b in zip("AB", new, old, strict=True):
+                            self.assertTrue(
+                                torch.equal(a, b),
+                                f"{factor} differs from the post-merge result by at "
+                                f"most {(a - b).abs().max():.3e}",
+                            )
+
+    def test_scaling_factor_respected(self):
+        """``scaling_factor`` now survives normalization -- it could not before.
+
+        Post-merge, rescaling to a fixed target erased whatever ``apply_change``
+        had multiplied in.  Pre-merge, gamma applies on top: each side of the
+        merged extension scales by gamma, so the product ``B @ A`` scales by
+        gamma squared.
+        """
+        gamma = 3.0
+        for name, factory in self._both():
+            with self.subTest(layer=name):
+                case = factory()
+                old_rank, _, _, _ = self._grow(
+                    case.block, case.x, case.keep, scaling_factor=gamma
+                )
+                a_new, b_new = self._new_ranks(case.block, old_rank)
+
+                a_norms = _rank_norms(a_new, rank_dim=0)
+                self.assertAllClose(
+                    a_norms,
+                    torch.full_like(a_norms, gamma),
+                    atol=1e-5,
+                    message="new A rows must be gamma times the unit-norm target",
+                )
+                b_norms = _rank_norms(b_new, rank_dim=1)
+                target = gamma * (case.fan_out * self.lr_init) ** 0.5
+                self.assertAllClose(
+                    b_norms,
+                    torch.full_like(b_norms, target),
+                    atol=1e-5,
+                    message="new B columns must be gamma times sqrt(fan_out * lr)",
+                )
+
+    def test_apply_change_without_extensions_is_a_noop(self):
+        """``apply_change`` with nothing pending must not raise.
+
+        The old ``rank <= old_rank`` guard absorbed this case silently.  Pre-merge
+        there is no rank to compare, and the primitives step 4 will route through
+        raise on a missing extension, so ``_has_pending_extensions`` has to carry
+        that tolerance explicitly.
+        """
+        for name, factory in self._both():
+            with self.subTest(layer=name):
+                block = factory().block
+                self.assertFalse(block._has_pending_extensions())
+                rank_before = block.rank
+                a_before = block.first_layer.weight.clone()
+                b_before = block.second_layer.weight.clone()
+
+                block.apply_change(extension_size=0, apply_delta=False)
+
+                self.assertEqual(block.rank, rank_before)
+                self.assertTrue(torch.equal(block.first_layer.weight, a_before))
+                self.assertTrue(torch.equal(block.second_layer.weight, b_before))

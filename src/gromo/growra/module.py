@@ -201,13 +201,28 @@ class GrowRABlock(GrowingBlock):
         rank_dim : int
             Axis carrying the ranks: 0 for A, 1 for B.
 
+        Notes
+        -----
+        Each rank is gathered into a contiguous row before reducing, rather than
+        reducing in place over whatever strides the tensor happens to have.  That
+        is not cosmetic: a float sum depends on its accumulation order, so the
+        same values reduced along a strided axis and along a contiguous one can
+        differ by an ulp (observed on a real extension: ``0.1378311515`` vs
+        ``0.1378311664``).  Two things make that reachable here --
+        ``sub_select_optimal_added_parameters`` leaves the pending extensions as
+        strided views, and for B the rank axis is dim 1, so it is never the
+        fastest-varying one. Reducing contiguous rows pins the result: it no
+        longer depends on how many candidates were computed before trimming, nor
+        on whether the extension has been merged yet, and it reproduces the
+        per-rank ``.norm()`` calls this vectorization replaced.
+
         Returns
         -------
         torch.Tensor
             One norm per rank, of shape ``(weight.shape[rank_dim],)``.
         """
-        dims = tuple(d for d in range(weight.dim()) if d != rank_dim)
-        return torch.linalg.vector_norm(weight, dim=dims)
+        per_rank = weight.transpose(0, rank_dim).contiguous().flatten(1)
+        return torch.linalg.vector_norm(per_rank, dim=1)
 
     @classmethod
     def _rank_norms_for_scaling(cls, weight: torch.Tensor, rank_dim: int) -> torch.Tensor:
@@ -237,9 +252,43 @@ class GrowRABlock(GrowingBlock):
         broadcast_shape[rank_dim] = weight.shape[rank_dim]
         return norms.view(broadcast_shape)
 
+    @staticmethod
+    def _extension_weight(layer: torch.nn.Module | None) -> torch.Tensor:
+        """Return an extension layer's weight tensor.
+
+        Parameters
+        ----------
+        layer : torch.nn.Module | None
+            ``extended_output_layer`` or ``extended_input_layer``.
+
+        Returns
+        -------
+        torch.Tensor
+            Its weight.  The ``isinstance`` narrowing matches what
+            ``GrowingModule.initialize_extensions`` does: on an ``nn.Module``,
+            ``.weight`` is otherwise only known to be ``Tensor | Module``.
+        """
+        assert layer is not None, "no pending extension"
+        weight = layer.weight
+        assert isinstance(weight, torch.Tensor)
+        return weight
+
+    def _has_pending_extensions(self) -> bool:
+        """Whether ``compute_optimal_updates`` has left candidate ranks to merge.
+
+        Returns
+        -------
+        bool
+            ``True`` when both the A and the B extension exist.
+        """
+        return (
+            self.first_layer.extended_output_layer is not None
+            and self.second_layer.extended_input_layer is not None
+        )
+
     @torch.no_grad()
-    def _normalize_new_ranks(self, old_rank: int) -> None:
-        """Rescale the newly added ranks per GrowRA paper Section A.5.
+    def _normalize_new_ranks(self) -> None:
+        """Rescale the pending new ranks per GrowRA paper Section A.5.
 
         This is a *normalization*, not an initialization: every value it touches
         was computed by ``compute_optimal_updates`` and only its magnitude
@@ -251,30 +300,31 @@ class GrowRABlock(GrowingBlock):
           A.5: "scale B to have variance eta"), giving
           ``||B_col|| = sqrt(fan_out * lr_init)``.
 
-        Parameters
-        ----------
-        old_rank : int
-            Rank of the adapter before the extension was merged; the ranks from
-            ``old_rank`` onwards are the new ones.
-        """
-        if self.rank <= old_rank:
-            return
-        else:
-            # The two factors are divided and multiplied respectively rather
-            # than sharing one operation: that is bit-for-bit what the per-rank
-            # loops this replaces did, so the refactor cannot move any number.
-            a_new = self.first_layer.weight[old_rank:]
-            a_new.div_(self._rank_norms_for_scaling(a_new, 0))
+        Operates on the *pending* extensions, before ``apply_change`` merges
+        them, which is where every other weight-shaping operation in this library
+        works.  The new ranks are then whole tensors rather than a slice of a
+        larger one, so no ``old_rank`` bookkeeping is needed, and a caller-set
+        ``scaling_factor`` still applies on top instead of being erased.
 
-            b_new = self.second_layer.weight[:, old_rank:]
-            # ``fan_out = b_new.shape[0]`` only holds because every axis after
-            # the rank axis is a singleton (a 1x1 kernel for GrowRAConv2d);
-            # otherwise the per-rank norm would span fan_out * kH * kW entries.
-            assert all(size == 1 for size in b_new.shape[2:]), (
-                f"B must have a 1x1 kernel to derive fan_out, got {tuple(b_new.shape)}"
-            )
-            target = (b_new.shape[0] * self.lr_init) ** 0.5
-            b_new.mul_(target / self._rank_norms_for_scaling(b_new, 1))
+        Does nothing when there is no pending extension.
+        """
+        if not self._has_pending_extensions():
+            return
+        # The two factors are divided and multiplied respectively rather than
+        # sharing one operation: that is bit-for-bit what the per-rank loops
+        # this replaces did, so the refactor cannot move any number.
+        a_new = self._extension_weight(self.first_layer.extended_output_layer)
+        a_new.div_(self._rank_norms_for_scaling(a_new, 0))
+
+        b_new = self._extension_weight(self.second_layer.extended_input_layer)
+        # ``fan_out = b_new.shape[0]`` only holds because every axis after the
+        # rank axis is a singleton (a 1x1 kernel for GrowRAConv2d); otherwise
+        # the per-rank norm would span fan_out * kH * kW entries.
+        assert all(size == 1 for size in b_new.shape[2:]), (
+            f"B must have a 1x1 kernel to derive fan_out, got {tuple(b_new.shape)}"
+        )
+        target = (b_new.shape[0] * self.lr_init) ** 0.5
+        b_new.mul_(target / self._rank_norms_for_scaling(b_new, 1))
 
     def apply_change(
         self,
@@ -286,7 +336,14 @@ class GrowRABlock(GrowingBlock):
         lr_init: float | None = None,
         reinit_extension: bool = True,
     ) -> None:
-        """Apply the pending change, then normalize the ranks it added.
+        """Normalize the pending new ranks, then apply the change.
+
+        The normalization runs *before* the merge: the new ranks are then whole
+        tensors instead of a slice, ``scaling_factor`` is applied on top of the
+        normalized magnitudes rather than being erased by them, and the operation
+        sits where the rest of the library's weight-shaping operations sit.
+        With ``scaling_factor=1`` the result is bit-identical to normalizing
+        after the merge.
 
         The first four parameters are those of ``GrowingBlock.apply_change`` and
         are forwarded unchanged; the two keyword-only ones are GrowRA-specific
@@ -306,22 +363,21 @@ class GrowRABlock(GrowingBlock):
             Overrides ``self.lr_init``, the variance targeted for the new B
             columns by ``_normalize_new_ranks``.  ``None`` keeps the current value.
         reinit_extension : bool
-            Whether the newly grown ranks are rescaled by
+            Whether the pending new ranks are rescaled by
             ``_normalize_new_ranks`` (paper A.5 variance-eta normalization).
-            ``False`` keeps the optimal magnitudes produced by the base
-            ``apply_change`` (legacy <=819a23c behaviour).
+            ``False`` keeps the optimal magnitudes produced by
+            ``compute_optimal_updates`` (legacy <=819a23c behaviour).
         """
         if lr_init is not None:
             self.lr_init = lr_init
-        old_rank = self.rank
+        if reinit_extension and apply_extension:
+            self._normalize_new_ranks()
         super().apply_change(
             extension_size=extension_size,
             scaling_factor=scaling_factor,
             apply_delta=apply_delta,
             apply_extension=apply_extension,
         )
-        if reinit_extension and apply_extension:
-            self._normalize_new_ranks(old_rank)
 
     def enable_dora(self) -> None:
         """Enable DoRA magnitude reparameterization."""
