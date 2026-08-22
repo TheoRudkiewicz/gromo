@@ -11,6 +11,7 @@ Tests cover:
 
 import copy
 import unittest
+from typing import NamedTuple
 from unittest import TestCase
 
 import torch
@@ -26,6 +27,7 @@ from gromo.growra.module import GrowRAConv2d, GrowRALinear, Scaling
 from gromo.modules.conv2d_growing_module import Conv2dGrowingModule
 from gromo.modules.linear_growing_module import LinearGrowingModule
 from gromo.utils.utils import global_device
+from tests.torch_unittest import TorchTestCase
 
 
 try:
@@ -2243,3 +2245,276 @@ class TestGrowRAFisher(TestCase):
 
         for lora in (lora_big, lora_small):
             lora.reset_computation()
+
+
+# ============ GrowRA §A.5 normalization: current behaviour ============
+
+
+def _rank_norms(weight: torch.Tensor, rank_dim: int) -> torch.Tensor:
+    """L2 norm of each rank, reducing every axis except ``rank_dim``.
+
+    ``rank_dim`` is 0 for the A factor (``(k, fan_in, ...)``) and 1 for the B
+    factor (``(fan_out, k, ...)``): the rank axis is the only axis that is not
+    a fan axis, for both GrowRALinear and GrowRAConv2d.
+    """
+    dims = tuple(d for d in range(weight.dim()) if d != rank_dim)
+    return (weight**2).sum(dim=dims).sqrt()
+
+
+def _per_rank_vectors(weight: torch.Tensor, rank_dim: int) -> torch.Tensor:
+    """Flatten ``weight`` to ``(k, -1)``, one row per rank."""
+    return weight.transpose(0, rank_dim).flatten(1)
+
+
+class _Case(NamedTuple):
+    """One layer type under test, with the shapes its extensions must have."""
+
+    block: GrowRALinear | GrowRAConv2d
+    x: torch.Tensor
+    keep: int
+    fan_out: int
+    a_shape: tuple[int, ...]
+    b_shape: tuple[int, ...]
+
+
+class TestGrowRANormalizationTargets(TorchTestCase):
+    """Pin the numerical result of the GrowRA paper Section A.5 rescale.
+
+    ``_post_extension_init`` rescales each new A row to unit norm and each new
+    B column to ``sqrt(fan_out * lr_init)``.  Nothing asserted this before;
+    these tests exist so the planned pre-merge refactor of that rescale has a
+    numerical contract to preserve.
+    """
+
+    lr_init = 0.05
+
+    def _grow(self, block, x, keep, **kwargs):
+        """Run one growth step and return what the merge consumed.
+
+        Returns ``(old_rank, pending_a, pending_b, sigma)``, captured after
+        sub-selection and before ``apply_change`` -- the only window in which
+        the new ranks exist as separate, addressable tensors.
+        """
+        options = dict(
+            compute_delta=False,
+            use_covariance=True,
+            use_projection=False,
+            alpha_zero=False,
+            omega_zero=False,
+            ignore_singular_values=False,
+            use_fisher=True,
+        )
+        options.update(kwargs)
+
+        block.init_computation()
+        block.zero_grad()
+        (block(x) ** 2).sum().backward()
+        block.update_computation()
+        block.compute_optimal_updates(maximum_added_neurons=keep + 1, **options)
+        block.sub_select_optimal_added_parameters(keep_neurons=keep)
+
+        pending_a = block.first_layer.extended_output_layer.weight.detach().clone()
+        pending_b = block.second_layer.extended_input_layer.weight.detach().clone()
+        sigma = block.eigenvalues_extension.detach().clone()
+
+        old_rank = block.rank
+        block.apply_change(scaling_factor=1.0, extension_size=keep, lr_init=self.lr_init)
+        block.reset_computation()
+        return old_rank, pending_a, pending_b, sigma
+
+    @staticmethod
+    def _new_ranks(block, old_rank):
+        """The slices of the merged weights holding the freshly added ranks."""
+        return (
+            block.first_layer.weight[old_rank:],
+            block.second_layer.weight[:, old_rank:],
+        )
+
+    def _make_linear(self):
+        """Return a rank-0 GrowRALinear plus everything the assertions need.
+
+        ``a_shape`` / ``b_shape`` spell out the rank-axis convention: the rank
+        is dim 0 of A and dim 1 of B, every other axis being a fan axis.
+        """
+        torch.manual_seed(0)
+        block = GrowRALinear(_linear(8, 6), rank=0)
+        keep, fan_out = 3, 6
+        return _Case(block, _randn(32, 8), keep, fan_out, (keep, 8), (fan_out, keep))
+
+    def _make_conv(self):
+        """Same for GrowRAConv2d; B keeps a 1x1 kernel, which is why fan_out is dim 0."""
+        torch.manual_seed(0)
+        block = GrowRAConv2d(_conv2d(3, 5, kernel_size=3, padding=1), rank=0)
+        keep, fan_out = 2, 5
+        return _Case(
+            block,
+            _randn(4, 3, 8, 8),
+            keep,
+            fan_out,
+            (keep, 3, 3, 3),
+            (fan_out, keep, 1, 1),
+        )
+
+    def _both(self):
+        yield "linear", self._make_linear
+        yield "conv2d", self._make_conv
+
+    # ---- test 1: the paper A.5 targets ----
+
+    def test_growra_normalization_targets(self):
+        """Each new A row has norm 1; each new B column norm sqrt(fan_out * lr)."""
+        for name, factory in self._both():
+            with self.subTest(layer=name):
+                case = factory()
+                old_rank, _, _, _ = self._grow(case.block, case.x, case.keep)
+                self.assertEqual(case.block.rank, old_rank + case.keep)
+
+                a_new, b_new = self._new_ranks(case.block, old_rank)
+                self.assertShapeEqual(a_new, case.a_shape, "new A ranks")
+                # ``fan_out = b_shape[0]`` is the true fan-out only because the
+                # B convolution has a 1x1 kernel; b_shape pins that too.
+                self.assertShapeEqual(b_new, case.b_shape, "new B ranks")
+
+                a_norms = _rank_norms(a_new, rank_dim=0)
+                self.assertAllClose(
+                    a_norms,
+                    torch.ones_like(a_norms),
+                    atol=1e-5,
+                    message="new A rows must have unit norm",
+                )
+
+                b_norms = _rank_norms(b_new, rank_dim=1)
+                target = (case.fan_out * self.lr_init) ** 0.5
+                self.assertAllClose(
+                    b_norms,
+                    torch.full_like(b_norms, target),
+                    atol=1e-5,
+                    message=f"new B columns must have norm sqrt(fan_out * lr) = {target}",
+                )
+
+    def test_growra_normalization_targets_follow_lr_init(self):
+        """The B target tracks ``lr_init``: quadrupling it doubles the column norm."""
+        norms = {}
+        for lr_init in (0.05, 0.20):
+            self.lr_init = lr_init
+            case = self._make_linear()
+            old_rank, _, _, _ = self._grow(case.block, case.x, case.keep)
+            _, b_new = self._new_ranks(case.block, old_rank)
+            norms[lr_init] = _rank_norms(b_new, rank_dim=1)
+        self.assertAllClose(
+            norms[0.20],
+            2 * norms[0.05],
+            atol=1e-5,
+            message="B norms must scale with sqrt(lr_init)",
+        )
+
+    # ---- test 2: it is a normalization, not an initialization ----
+
+    def test_normalization_preserves_direction(self):
+        """The rescale changes magnitudes only: every new rank keeps its direction."""
+        for name, factory in self._both():
+            with self.subTest(layer=name):
+                case = factory()
+                old_rank, pending_a, pending_b, _ = self._grow(
+                    case.block, case.x, case.keep
+                )
+                a_new, b_new = self._new_ranks(case.block, old_rank)
+                self.assertShapeEqual(pending_a, case.a_shape, "pending A extension")
+                self.assertShapeEqual(pending_b, case.b_shape, "pending B extension")
+
+                for factor, rank_dim, before, after in (
+                    ("A", 0, pending_a, a_new),
+                    ("B", 1, pending_b, b_new),
+                ):
+                    cosine = F.cosine_similarity(
+                        _per_rank_vectors(before, rank_dim),
+                        _per_rank_vectors(after, rank_dim),
+                        dim=1,
+                    )
+                    self.assertAllClose(
+                        cosine,
+                        torch.ones_like(cosine),
+                        atol=1e-5,
+                        message=f"{factor} directions changed during normalization",
+                    )
+                    # ... and the rescale is a strictly positive stretch.
+                    ratio = _rank_norms(after, rank_dim) / _rank_norms(before, rank_dim)
+                    self.assertTrue((ratio > 0).all(), f"{factor} ratio={ratio.tolist()}")
+
+    def test_normalization_actually_rescales(self):
+        """Guard against a vacuous test 2: the magnitudes really do change."""
+        case = self._make_linear()
+        old_rank, pending_a, pending_b, _ = self._grow(case.block, case.x, case.keep)
+        a_new, b_new = self._new_ranks(case.block, old_rank)
+        for factor, rank_dim, before, after in (
+            ("A", 0, pending_a, a_new),
+            ("B", 1, pending_b, b_new),
+        ):
+            before_norms = _rank_norms(before, rank_dim)
+            after_norms = _rank_norms(after, rank_dim)
+            self.assertFalse(
+                torch.allclose(before_norms, after_norms, atol=1e-3),
+                f"{factor} was already at target, test 2 would be vacuous: "
+                f"{before_norms.tolist()} vs {after_norms.tolist()}",
+            )
+
+    # ---- test 5a: where the singular values actually live ----
+
+    def test_b_norms_track_sqrt_sigma_without_fisher(self):
+        """Before normalization, ``||B[:, i]|| == sqrt(sigma_i)`` -- but only without E.
+
+        ``omega = sqrt(s)[:, None] * v`` with orthonormal rows of ``v``, so the
+        relation is exact.  It stops being exact as soon as the empirical
+        Fisher preconditioner is applied (``omega @ E^{-1/2}``), which is what
+        ``use_fisher=True`` does -- see the companion test below.
+        """
+        for name, factory in self._both():
+            with self.subTest(layer=name):
+                case = factory()
+                _, _, pending_b, sigma = self._grow(
+                    case.block,
+                    case.x,
+                    case.keep,
+                    use_fisher=False,
+                    ignore_singular_values=False,
+                )
+                self.assertShapeEqual(pending_b, case.b_shape, "pending B extension")
+                self.assertShapeEqual(sigma, (case.keep,), "singular values")
+                ratio = _rank_norms(pending_b, rank_dim=1) / sigma.sqrt()
+                self.assertAllClose(
+                    ratio,
+                    torch.ones_like(ratio),
+                    atol=1e-5,
+                    message="||B col|| / sqrt(sigma) must be 1 without Fisher",
+                )
+
+    def test_b_norms_do_not_track_sqrt_sigma_with_fisher(self):
+        """With ``use_fisher=True`` -- the GrowRA default -- the relation breaks.
+
+        ``E^{-1/2}`` acts on the B side exactly as ``S^{-1/2}`` acts on the A
+        side.  Pinned because it is the reason a test may not assert
+        ``||B[:, i]|| ~ sqrt(sigma_i)`` on the default growth path.
+        """
+        case = self._make_linear()
+        _, _, pending_b, sigma = self._grow(
+            case.block, case.x, case.keep, use_fisher=True, ignore_singular_values=False
+        )
+        ratio = _rank_norms(pending_b, rank_dim=1) / sigma.sqrt()
+        self.assertGreater(
+            (ratio - 1).abs().max().item(),
+            0.1,
+            f"expected the Fisher preconditioner to detach ||B col|| from "
+            f"sqrt(sigma), got ratio={ratio.tolist()}",
+        )
+
+    def test_a_norms_do_not_track_sqrt_sigma(self):
+        """The A side never carries ``sqrt(sigma_i)`` exactly: ``S^{-1/2}`` is in the way."""
+        case = self._make_linear()
+        _, pending_a, _, sigma = self._grow(
+            case.block, case.x, case.keep, use_fisher=False, ignore_singular_values=False
+        )
+        ratio = _rank_norms(pending_a, rank_dim=0) / sigma.sqrt()
+        self.assertFalse(
+            torch.allclose(ratio, torch.ones_like(ratio), atol=1e-3),
+            f"||A row|| / sqrt(sigma) unexpectedly equals 1: {ratio.tolist()}",
+        )
