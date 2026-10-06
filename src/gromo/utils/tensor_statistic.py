@@ -70,6 +70,20 @@ class TensorStatistic:
     def __str__(self):
         return f"{self.name} tensor of shape {self._shape} with {self.samples} samples"
 
+    @property
+    def dtype(self) -> torch.dtype | None:
+        """Dtype the statistic is accumulated in, None before the first update.
+
+        It is the dtype that bounds the precision of the statistic, even when the
+        averaged tensor is later cast to a more precise one.
+
+        Returns
+        -------
+        torch.dtype | None
+            dtype of the accumulated tensor
+        """
+        return None if self._tensor is None else self._tensor.dtype
+
     @torch.no_grad()
     def update(
         self, count_samples: bool = True, **kwargs: Any

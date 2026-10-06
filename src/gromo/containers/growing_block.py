@@ -424,7 +424,7 @@ class GrowingBlock(GrowingContainer):
 
     def compute_optimal_updates(
         self,
-        numerical_threshold: float | KnownThresholdRuleName | ThresholdRule = 1e-6,
+        numerical_threshold: float | KnownThresholdRuleName | ThresholdRule | None = None,
         statistical_threshold: float | KnownThresholdRuleName | ThresholdRule = 1e-3,
         maximum_added_neurons: int | None = None,
         dtype: torch.dtype = torch.float32,
@@ -438,6 +438,7 @@ class GrowingBlock(GrowingContainer):
         fisher_shrinkage: float = 0.0,
         collect_spectra: bool = False,
         collect_delta_spectrum: bool = False,
+        worst_case_numerical_floor: bool = True,
     ) -> None:
         """
         Compute the optimal update for second layer and additional neurons.
@@ -447,10 +448,13 @@ class GrowingBlock(GrowingContainer):
 
         Parameters
         ----------
-        numerical_threshold: float | KnownThresholdRuleName | ThresholdRule
+        numerical_threshold: float | KnownThresholdRuleName | ThresholdRule | None
             threshold to consider an eigenvalue as zero in the square root
             of the inverse of S.
-            When a rule is given it is bound to the previous module's ``tensor_s``.
+            None for the numerical floor only (see `numerical_floor_terms`); a
+            value or a rule can only raise the floor. When a rule is given it is
+            bound to the previous module's ``tensor_s``. Known rule names are
+            ``"mean_over_sqrt_n"`` and ``"operator_norm_noise_threshold"``.
         statistical_threshold: float | KnownThresholdRuleName | ThresholdRule
             threshold to consider an eigenvalue as zero in the SVD of S{-1/2} N.
             When a rule is given it is bound to ``tensor_m_prev``.
@@ -482,13 +486,18 @@ class GrowingBlock(GrowingContainer):
         fisher_shrinkage: float
             Shrinkage intensity alpha in [0, 1]. If > 0, shrink the gradient
             covariance E to (1 - alpha) * E + alpha * tr(E)/d * I and whiten it
-            without truncation. Default is 0.0 (absolute-threshold behaviour).
+            at the numerical floor without its worst-case term. Default is 0.0
+            (no shrinkage).
         collect_spectra: bool
             If True, record the growth spectra in the second layer's
             ``growth_spectra``. Default is False.
         collect_delta_spectrum: bool
             If True, also record the singular values of the optimal delta.
             Requires an additional decomposition. Default is False.
+        worst_case_numerical_floor: bool
+            Whether the numerical floor includes its worst-case term, the default
+            tolerance of `torch.linalg.pinv` (see `numerical_floor_terms`).
+            Default is True.
 
         Note
         ----
@@ -541,6 +550,7 @@ class GrowingBlock(GrowingContainer):
                 use_fisher=use_fisher,
                 fisher_shrinkage=fisher_shrinkage,
                 collect_spectra=collect_spectra,
+                worst_case_numerical_floor=worst_case_numerical_floor,
             )
         else:
             # When hidden_neurons > 0, delegate to second layer's
@@ -562,6 +572,7 @@ class GrowingBlock(GrowingContainer):
                 fisher_shrinkage=fisher_shrinkage,
                 collect_spectra=collect_spectra,
                 collect_delta_spectrum=collect_delta_spectrum,
+                worst_case_numerical_floor=worst_case_numerical_floor,
             )
 
     def apply_change(

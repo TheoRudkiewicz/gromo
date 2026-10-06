@@ -209,6 +209,7 @@ class GrowingContainer(torch.nn.Module):
         self,
         update: bool = True,
         force_pseudo_inverse: bool = False,
+        worst_case_numerical_floor: bool = True,
     ) -> None:
         """Compute optimal delta for growth procedure
 
@@ -220,11 +221,15 @@ class GrowingContainer(torch.nn.Module):
         force_pseudo_inverse : bool
             use the pseudo-inverse to compute the optimal delta even if the
             matrix is invertible, by default False
+        worst_case_numerical_floor : bool
+            whether the numerical floor of the pseudo-inverses includes its
+            worst-case term (see `optimal_delta`), by default True
         """
         for layer in self._growing_layers:
             layer.compute_optimal_delta(
                 update=update,
                 force_pseudo_inverse=force_pseudo_inverse,
+                worst_case_numerical_floor=worst_case_numerical_floor,
             )
 
     def compute_optimal_updates(self, *args: Any, **kwargs: Any) -> None:

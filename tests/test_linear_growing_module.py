@@ -14,7 +14,7 @@ from gromo.modules.linear_growing_module import (
     LinearMergeGrowingModule,
 )
 from gromo.utils.tensor_statistic import TensorStatistic
-from gromo.utils.tools import sqrt_inverse_matrix_semi_positive
+from gromo.utils.tools import optimal_delta, sqrt_inverse_matrix_semi_positive
 from gromo.utils.utils import global_device
 from tests.torch_unittest import (
     GrowableIdentity,
@@ -1326,6 +1326,52 @@ class TestLinearGrowingModule(TestLinearGrowingModuleBase):
         )
         self.assertAlmostEqual(spectra["matrix_s"]["threshold"], expected, places=5)
 
+    @unittest_parametrize(({"rule": None}, {"rule": "operator_norm_noise_threshold"}))
+    def test_known_threshold_rules_end_to_end(self, rule: str | None):
+        """The default (the floor) and each known rule give a finite extension."""
+        layer_out = self._run_growth_computation()
+        layer_out.compute_optimal_updates(numerical_threshold=rule, collect_spectra=True)  # type: ignore
+        assert layer_out.growth_spectra is not None
+        matrix_s = layer_out.growth_spectra["matrix_s"]
+        self.assertGreaterEqual(matrix_s["threshold"], matrix_s["numerical_floor"])
+        self.assertLessEqual(matrix_s["kept"], matrix_s["total"])
+        assert isinstance(layer_out.extended_input_layer, torch.nn.Linear)
+        self.assertTrue(torch.isfinite(layer_out.extended_input_layer.weight).all())
+
+    def test_numerical_floor_uses_the_accumulation_dtype(self):
+        """After a cast to float64, the precision terms of the floors of S and E keep
+        the epsilon of the float32 statistics."""
+        layer_out = self._run_growth_computation()
+        layer_out.compute_optimal_updates(
+            numerical_threshold="mean_over_sqrt_n",
+            dtype=torch.float64,
+            use_fisher=True,
+            collect_spectra=True,
+        )
+        assert layer_out.growth_spectra is not None
+        for key in ("matrix_s", "matrix_e"):
+            spectra = layer_out.growth_spectra[key]
+            expected = (
+                torch.finfo(torch.float32).eps * spectra["eigenvalues"].max().item()
+            )
+            precision = spectra["numerical_floor_terms"]["precision"]
+            self.assertAlmostEqual(precision / expected, 1.0, places=5)
+
+    def test_worst_case_numerical_floor_is_forwarded(self):
+        """compute_optimal_updates forwards the flag to the whitening of S and to
+        optimal_delta."""
+        layer_out = self._run_growth_computation()
+        with mock.patch(
+            "gromo.modules.growing_module.optimal_delta", wraps=optimal_delta
+        ) as wrapped:
+            layer_out.compute_optimal_updates(
+                worst_case_numerical_floor=False, collect_spectra=True
+            )
+        self.assertIs(wrapped.call_args.kwargs["worst_case_numerical_floor"], False)
+        assert layer_out.growth_spectra is not None
+        terms = layer_out.growth_spectra["matrix_s"]["numerical_floor_terms"]
+        self.assertEqual(terms["worst_case"], 0.0)
+
     def test_unknown_threshold_rule_raises(self):
         """A rule name that is not known fails at the module boundary."""
         layer_out = self._run_growth_computation()
@@ -1828,20 +1874,28 @@ class TestLinearGrowingModule(TestLinearGrowingModuleBase):
         with self.assertRaises(AssertionError):
             self._fisher_shrinkage_eigenvalues(layer2, fisher_shrinkage=1.5)
 
-    def test_fisher_shrinkage_rescues_truncated_e(self):
-        """When E's spectrum sits below the whitening threshold, the default
-        truncates E to rank 0 (all-zero scores) while shrinkage keeps them."""
-        # loss_scale 1e-4 -> gradients ~1e-4 -> E ~1e-8, below the 1e-6 cutoff
+    def test_fisher_shrinkage_whitens_at_the_floor(self):
+        """The floor is relative, so an E of small scale is not truncated; the shrunk
+        E is whitened without the worst-case term and keeps all its directions."""
+        # loss_scale 1e-4 -> gradients ~1e-4 -> E ~1e-8, below the old 1e-6 cutoff
         layer2 = self._fisher_two_layer_setup(loss_scale=1e-4)
         e_eigs = torch.linalg.eigvalsh(layer2.covariance_loss_gradient())
         self.assertLess(float(e_eigs.max()), 1e-6)
+        eig_default = self._fisher_shrinkage_eigenvalues(layer2, fisher_shrinkage=0.0)
+        self.assertGreater(float(eig_default.max()), 0.0)
 
-        eig_truncated = self._fisher_shrinkage_eigenvalues(
-            layer2, fisher_shrinkage=0.0
-        ).clone()
-        eig_shrunk = self._fisher_shrinkage_eigenvalues(layer2, fisher_shrinkage=0.1)
-        self.assertAllClose(eig_truncated, torch.zeros_like(eig_truncated))
-        self.assertGreater(float(eig_shrunk.max()), 0.0)
+        layer2.compute_optimal_updates(
+            statistical_threshold=0.0,
+            compute_delta=False,
+            use_projection=False,
+            use_fisher=True,
+            fisher_shrinkage=0.1,
+            collect_spectra=True,
+        )
+        assert layer2.growth_spectra is not None
+        matrix_e = layer2.growth_spectra["matrix_e"]
+        self.assertEqual(matrix_e["numerical_floor_terms"]["worst_case"], 0.0)
+        self.assertEqual(matrix_e["kept"], matrix_e["total"])
 
     def test_fisher_shrinkage_scale_equivariance(self):
         """Scaling the loss by c scales N by c and E by c^2, so the shrunk

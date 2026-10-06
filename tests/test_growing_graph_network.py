@@ -1,5 +1,6 @@
 import copy
 import unittest
+import unittest.mock
 
 import torch
 from torch.nn.functional import one_hot
@@ -126,6 +127,16 @@ class TestGrowingGraphNetwork(TorchTestCase):
                 device=global_device(),
             ),
         }
+
+    def test_compute_optimal_delta_forwards_worst_case_numerical_floor(self) -> None:
+        """The flag of the numerical floor reaches the DAG."""
+        with unittest.mock.patch.object(
+            type(self.net.dag), "compute_optimal_delta"
+        ) as compute_optimal_delta:
+            self.net.compute_optimal_delta(worst_case_numerical_floor=False)
+        self.assertIs(
+            compute_optimal_delta.call_args.kwargs["worst_case_numerical_floor"], False
+        )
 
     def test_init_empty_graph(self) -> None:
         self.net.init_empty_graph()

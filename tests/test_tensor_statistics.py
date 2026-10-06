@@ -54,6 +54,17 @@ class TestTensorStatistic(TestCase):
             self.assertIsNone(t._tensor)
             self.assertEqual(t.samples, 0)
 
+    def test_dtype(self):
+        """The dtype is that of the accumulated tensor, None before any update."""
+        t = self._tested_class(
+            shape=None,
+            update_function=lambda: (torch.zeros(2, dtype=torch.float64), 1),
+        )
+        self.assertIsNone(t.dtype)
+        t.updated = False
+        t.update()
+        self.assertEqual(t.dtype, torch.float64)
+
     def tearDown(self) -> None:
         reset_device()
 
