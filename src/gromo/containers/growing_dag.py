@@ -178,6 +178,7 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
         force_pseudo_inverse: bool = False,
         use_fisher: bool = False,
         fisher_shrinkage: float = 0.0,  # noqa: ARG002
+        worst_case_numerical_floor: bool = True,
     ):
         """Compute optimal delta for growth procedure for all nodes
 
@@ -194,6 +195,9 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
             not supported for GrowingDAG, see Raises.
         fisher_shrinkage : float
             not supported for GrowingDAG, see Raises.
+        worst_case_numerical_floor : bool
+            whether the numerical floor of the pseudo-inverses includes its
+            worst-case term (see `optimal_delta`), by default True
 
         Raises
         ------
@@ -218,6 +222,7 @@ class GrowingDAG(nx.DiGraph, GrowingContainer):
                 update=update,
                 return_deltas=return_deltas,
                 force_pseudo_inverse=force_pseudo_inverse,
+                worst_case_numerical_floor=worst_case_numerical_floor,
             )
             assert node_module.parameter_update_decrease is not None
 
