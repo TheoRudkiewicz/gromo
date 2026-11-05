@@ -65,6 +65,75 @@ class TestTensorStatistic(TestCase):
         t.update()
         self.assertEqual(t.dtype, torch.float64)
 
+    def _fed(
+        self, updates: list[torch.Tensor], accumulation_dtype: torch.dtype | None = None
+    ) -> TensorStatistic:
+        """A statistic that received ``updates`` in order, one sample each.
+
+        The statistic keeps its first update as its running sum and adds to it in
+        place, so it is fed copies.
+        """
+        pending = iter([u.clone() for u in updates])
+        t = self._tested_class(shape=None, update_function=lambda: (next(pending), 1))
+        t.init(accumulation_dtype)
+        for _ in updates:
+            t.updated = False
+            t.update()
+        return t
+
+    def test_default_accumulation_is_in_the_update_dtype(self):
+        """Without an accumulation dtype: an fp32 running sum, exactly as by hand."""
+        torch.manual_seed(0)
+        updates = [torch.randn(3, 3) for _ in range(20)]
+        t = self._fed(updates)
+        by_hand = torch.zeros(3, 3)
+        for u in updates:
+            by_hand += u
+        self.assertEqual(t.dtype, torch.float32)
+        torch.testing.assert_close(t(), by_hand / len(updates), rtol=0, atol=0)
+
+    def test_float64_accumulation(self):
+        """fp64 running sum; the average is that sum over n, rounded once to fp32."""
+        torch.manual_seed(0)
+        updates = [torch.randn(3, 3) for _ in range(20)]
+        t = self._fed(updates, torch.float64)
+        by_hand = torch.zeros(3, 3, dtype=torch.float64)
+        for u in updates:
+            by_hand += u.double()
+        self.assertEqual(t.dtype, torch.float64)
+        self.assertEqual(t().dtype, torch.float32)
+        torch.testing.assert_close(t(), (by_hand / len(updates)).float(), rtol=0, atol=0)
+
+    def test_float64_accumulation_keeps_small_updates(self):
+        """1, then 1000 updates of 1e-8.
+
+        The fp32 spacing at 1 is 1.2e-7, so every 1e-8 is rounded away from an
+        fp32 sum, which stays at 1. An fp64 sum reaches 1 + 1e-5, and the final
+        rounding to fp32 keeps that difference.
+        """
+        updates = [torch.ones(1)] + [torch.full((1,), 1e-8) for _ in range(1000)]
+        n = len(updates)
+        torch.testing.assert_close(
+            self._fed(updates)(), torch.ones(1) / n, rtol=0, atol=0
+        )
+        torch.testing.assert_close(
+            self._fed(updates, torch.float64)(),
+            torch.tensor([(1 + 1e-5) / n]),
+            rtol=1e-6,
+            atol=0,
+        )
+
+    def test_init_without_dtype_restores_the_default(self):
+        t = self._tested_class(shape=None, update_function=lambda: (torch.ones(2), 1))
+        t.init(torch.float64)
+        t.updated = False
+        t.update()
+        self.assertEqual(t.dtype, torch.float64)
+        t.init()
+        t.updated = False
+        t.update()
+        self.assertEqual(t.dtype, torch.float32)
+
     def tearDown(self) -> None:
         reset_device()
 
