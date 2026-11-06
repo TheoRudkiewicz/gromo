@@ -21,8 +21,13 @@ the package to train a simple neural network, and how to grow the network as
 it learns. The theoretical and algorithmic details of Gromo are described in
 the [TMLR24]_.
 
-The package is still in development, if you would like to contribute, please
-contact us!
+The package is still in development and contributions are welcome: see the
+`contributing guide <https://github.com/growingnet/gromo/blob/main/CONTRIBUTING.md>`_
+to get started, and the `Discussions <https://github.com/growingnet/gromo/discussions>`_
+for questions and ideas.
+
+To cite the software itself, use its Zenodo DOI
+`10.5281/zenodo.23421313 <https://doi.org/10.5281/zenodo.23421313>`_, which covers all versions.
 
 .. [TMLR24] Verbockhaven, M., Rudkiewicz, T., Chevallier, S., and Charpiat, G.
         (2024). Growing tiny networks: Spotting expressivity bottlenecks and
@@ -37,21 +42,19 @@ contact us!
 Installation
 ~~~~~~~~~~~~
 
-Simply run the following commands to install the package:
+Install the latest release from PyPI:
 
 .. code-block:: bash
 
-    pip install build
-    git clone https://github.com/growingnet/gromo.git
-    cd gromo
-    python -m build
-    pip install -e .
+    pip install gromo
 
-You may also clone with SSH if you have set up your SSH keys with GitHub:
+or, in a `uv <https://docs.astral.sh/uv/>`_ project, ``uv add gromo``.
+
+To install the development version from GitHub:
 
 .. code-block:: bash
 
-    git clone git@github.com:growingnet/gromo.git
+    pip install git+https://github.com/growingnet/gromo.git
 
 Getting started
 ~~~~~~~~~~~~~~~

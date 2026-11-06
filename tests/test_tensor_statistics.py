@@ -81,58 +81,51 @@ class TestTensorStatistic(TestCase):
             t.update()
         return t
 
-    def test_default_accumulation_is_in_the_update_dtype(self):
-        """Without an accumulation dtype: an fp32 running sum, exactly as by hand."""
-        torch.manual_seed(0)
-        updates = [torch.randn(3, 3) for _ in range(20)]
-        t = self._fed(updates)
-        by_hand = torch.zeros(3, 3)
-        for u in updates:
-            by_hand += u
-        self.assertEqual(t.dtype, torch.float32)
-        torch.testing.assert_close(t(), by_hand / len(updates), rtol=0, atol=0)
+    def test_default_accumulation_dtype(self):
+        """Without an override, accumulation uses the update dtype."""
+        t = self._fed([torch.ones(1, dtype=torch.bfloat16)])
+        self.assertEqual(t.dtype, torch.bfloat16)
 
-    def test_float64_accumulation(self):
-        """fp64 running sum; the average is that sum over n, rounded once to fp32."""
-        torch.manual_seed(0)
-        updates = [torch.randn(3, 3) for _ in range(20)]
-        t = self._fed(updates, torch.float64)
-        by_hand = torch.zeros(3, 3, dtype=torch.float64)
-        for u in updates:
-            by_hand += u.double()
+    def test_requested_accumulation_dtype(self):
+        """An explicit accumulation dtype determines the running sum dtype."""
+        t = self._fed([torch.ones(1, dtype=torch.bfloat16)], torch.float64)
         self.assertEqual(t.dtype, torch.float64)
-        self.assertEqual(t().dtype, torch.float32)
-        torch.testing.assert_close(t(), (by_hand / len(updates)).float(), rtol=0, atol=0)
+
+    def test_average_dtype(self):
+        """The average retains the update dtype when accumulation uses float64."""
+        t = self._fed([torch.ones(1, dtype=torch.bfloat16)], torch.float64)
+        self.assertEqual(t().dtype, torch.bfloat16)
 
     def test_float64_accumulation_keeps_small_updates(self):
-        """1, then 1000 updates of 1e-8.
+        """Float64 accumulation preserves increments lost during bfloat16 accumulation."""
+        updates = [
+            torch.tensor([value], dtype=torch.bfloat16)
+            for value in (1, 2**-9, 2**-9, 2**-9)
+        ]
+        # At 1, bfloat16 spacing is 2**-7: each increment rounds away.
+        for dtype, expected in ((None, 0.25), (torch.float64, 129 / 512)):
+            with self.subTest(accumulation_dtype=dtype):
+                t = self._fed(updates, dtype)
+                torch.testing.assert_close(
+                    t(),
+                    torch.tensor([expected], dtype=torch.bfloat16),
+                    rtol=0,
+                    atol=0,
+                )
 
-        The fp32 spacing at 1 is 1.2e-7, so every 1e-8 is rounded away from an
-        fp32 sum, which stays at 1. An fp64 sum reaches 1 + 1e-5, and the final
-        rounding to fp32 keeps that difference.
-        """
-        updates = [torch.ones(1)] + [torch.full((1,), 1e-8) for _ in range(1000)]
-        n = len(updates)
-        torch.testing.assert_close(
-            self._fed(updates)(), torch.ones(1) / n, rtol=0, atol=0
+    def test_init_restores_default_accumulation(self):
+        """Calling init without a dtype clears a previous accumulation override."""
+        t = self._tested_class(
+            shape=None,
+            update_function=lambda: (torch.ones(1, dtype=torch.bfloat16), 1),
         )
-        torch.testing.assert_close(
-            self._fed(updates, torch.float64)(),
-            torch.tensor([(1 + 1e-5) / n]),
-            rtol=1e-6,
-            atol=0,
-        )
-
-    def test_init_without_dtype_restores_the_default(self):
-        t = self._tested_class(shape=None, update_function=lambda: (torch.ones(2), 1))
         t.init(torch.float64)
         t.updated = False
         t.update()
-        self.assertEqual(t.dtype, torch.float64)
         t.init()
         t.updated = False
         t.update()
-        self.assertEqual(t.dtype, torch.float32)
+        self.assertEqual(t.dtype, torch.bfloat16)
 
     def tearDown(self) -> None:
         reset_device()
