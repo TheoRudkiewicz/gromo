@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 
 
@@ -8,7 +7,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="gromo icon" sizes="300x168" href="_static/gromo_small.png" type="image/png">
-    <title>What’s new &#8212; GroMo 0.0.1-dev documentation</title>
+    <title>What’s new &#8212; GroMo 0.2.0.dev0 documentation</title>
   
   
   
@@ -27,12 +26,12 @@
   </noscript>
   
   <!-- Loaded before other Sphinx assets -->
-  <link href="_static/styles/theme.css?digest=55c26ed414f5f8a31ebb" rel="stylesheet" />
-<link href="_static/styles/pydata-sphinx-theme.css?digest=55c26ed414f5f8a31ebb" rel="stylesheet" />
+  <link href="_static/styles/theme.css?digest=75c7c72ae941e8b558d8" rel="stylesheet" />
+<link href="_static/styles/pydata-sphinx-theme.css?digest=75c7c72ae941e8b558d8" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=03e43079" />
     <link rel="stylesheet" type="text/css" href="_static/copybutton.css?v=76b2166b" />
-    <link rel="stylesheet" type="text/css" href="_static/sg_gallery.css?v=fd6457a4" />
+    <link rel="stylesheet" type="text/css" href="_static/sg_gallery.css?v=c83e6b79" />
     <link rel="stylesheet" type="text/css" href="_static/sg_gallery-binder.css?v=f4aeca0c" />
     <link rel="stylesheet" type="text/css" href="_static/sg_gallery-dataframe.css?v=2082cf3c" />
     <link rel="stylesheet" type="text/css" href="_static/sg_gallery-rendered-html.css?v=1277b6f3" />
@@ -40,21 +39,20 @@
     <link rel="stylesheet" type="text/css" href="_static/css/custom.css?v=7c1988a6" />
   
   <!-- So that users can add custom icons -->
-  <script defer src="_static/scripts/fontawesome.js?digest=55c26ed414f5f8a31ebb"></script>
+  <script defer src="_static/scripts/fontawesome.js?digest=75c7c72ae941e8b558d8"></script>
   <!-- Pre-loaded scripts that we'll load fully later -->
-  <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=55c26ed414f5f8a31ebb" />
-<link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=55c26ed414f5f8a31ebb" />
+  <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=75c7c72ae941e8b558d8" />
+<link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=75c7c72ae941e8b558d8" />
 
     <script src="_static/jquery.js?v=5d32c60e"></script>
     <script src="_static/_sphinx_javascript_frameworks_compat.js?v=2cd50e6c"></script>
-    <script src="_static/documentation_options.js?v=5baf466d"></script>
+    <script src="_static/documentation_options.js?v=286342b3"></script>
     <script src="_static/doctools.js?v=fd6eb6e6"></script>
     <script src="_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="_static/clipboard.min.js?v=a7894cd8"></script>
     <script src="_static/copybutton.js?v=f281be69"></script>
     <script src="_static/sg-tags.js?v=d80f6fa4"></script>
     <script src="_static/design-tabs.js?v=f930bc37"></script>
-    <script async="async" src="https://www.googletagmanager.com/gtag/js?id=XXXX"></script>
     <script>
                 window.dataLayer = window.dataLayer || [];
                 function gtag(){ dataLayer.push(arguments); }
@@ -64,6 +62,11 @@
                     'ad_personalization': 'denied',
                     'analytics_storage': 'denied'
                 });
+            </script>
+    <script async="async" src="https://www.googletagmanager.com/gtag/js?id=XXXX"></script>
+    <script>
+                window.dataLayer = window.dataLayer || [];
+                function gtag(){dataLayer.push(arguments);}
                 gtag('js', new Date());
                 gtag('config', 'XXXX');
             </script>
@@ -72,10 +75,11 @@
     <link rel="index" title="Index" href="genindex.html" />
     <link rel="search" title="Search" href="search.html" />
     <link rel="next" title="Technical notes" href="tech_notes.html" />
-    <link rel="prev" title="gromo.utils.tools.compute_mask_tensor_t" href="generated/gromo.utils.tools.compute_mask_tensor_t.html" />
+    <link rel="prev" title="gromo.utils.tools.resolve_threshold_rule" href="generated/gromo.utils.tools.resolve_threshold_rule.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="color-scheme" content="light dark"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.0.1" />
+  <meta name="docsearch:version" content="0.2.0.dev0" />
   
     
     <script src="_static/searchtools.js"></script>
@@ -123,7 +127,7 @@
   
     <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
 <div class="bd-header__inner bd-page-width">
-  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+  <button type="button" class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation" aria-expanded="false" aria-controls="pst-primary-sidebar-modal">
     <span class="fa-solid fa-bars"></span>
   </button>
   
@@ -145,8 +149,8 @@
     
     
     
-    <img src="_static/logo_bg_white_small.png" class="logo__image only-light" alt="GroMo 0.0.1-dev documentation - Home"/>
-    <img src="_static/logo_bg_white_small.png" class="logo__image only-dark pst-js-only" alt="GroMo 0.0.1-dev documentation - Home"/>
+    <img src="_static/logo_bg_white_small.png" class="logo__image only-light" alt="GroMo 0.2.0.dev0 documentation - Home"/>
+    <img src="_static/logo_bg_white_small.png" class="logo__image only-dark pst-js-only" alt="GroMo 0.2.0.dev0 documentation - Home"/>
   
   
 </a></div>
@@ -176,7 +180,7 @@
 
 
 <li class="nav-item current active">
-  <a class="nav-link nav-internal" href="#">
+  <a class="nav-link nav-internal" href="#" aria-current="page">
     Release notes
   </a>
 </li>
@@ -199,7 +203,7 @@
         <div class="navbar-item navbar-persistent--container">
           
 
-<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+<button type="button" class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
  <i class="fa-solid fa-magnifying-glass"></i>
  <span class="search-button__default-text">Search</span>
  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
@@ -209,11 +213,18 @@
       
         <div class="navbar-item">
 
-<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
-  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
-  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
-  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
-</button></div>
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button type="button" class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg me-1"></i>System Settings</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg me-1"></i>Light</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
       
     </div>
     
@@ -222,7 +233,7 @@
   
     <div class="navbar-persistent--mobile">
 
-<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+<button type="button" class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
  <i class="fa-solid fa-magnifying-glass"></i>
  <span class="search-button__default-text">Search</span>
  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
@@ -231,7 +242,7 @@
   
 
   
-    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+    <button type="button" class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page" aria-expanded="false" aria-controls="pst-secondary-sidebar-modal">
       <span class="fa-solid fa-outdent"></span>
     </button>
   
@@ -245,7 +256,7 @@
       
       
       
-      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <dialog id="pst-primary-sidebar-modal" tabindex="-1"></dialog>
       <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
         
 
@@ -276,7 +287,7 @@
 
 
 <li class="nav-item current active">
-  <a class="nav-link nav-internal" href="#">
+  <a class="nav-link nav-internal" href="#" aria-current="page">
     Release notes
   </a>
 </li>
@@ -300,18 +311,26 @@
         
           <div class="navbar-item">
 
-<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
-  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
-  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
-  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
-</button></div>
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button type="button" class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg me-1"></i>System Settings</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg me-1"></i>Light</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
         
       </div>
     
   </div>
   
     <div class="sidebar-primary-items__start sidebar-primary__section">
-        <div class="sidebar-primary-item pst-sidebar-collapse"><button id="pst-collapse-sidebar-button" aria-expanded="true" aria-controls="pst-primary-sidebar"><svg class="pst-icon svg-inline--fa" role="img" aria-hidden="true" focusable="false" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
+        <div class="sidebar-primary-item pst-sidebar-collapse"><button type="button" id="pst-collapse-sidebar-button" aria-expanded="true" aria-controls="pst-primary-sidebar">
+  <svg class="pst-icon" role="img" aria-hidden="true" focusable="false" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg">
     <path fill="currentColor" d="M3 15.5C2.36232 15.5 1.74874 15.2564 1.28478 14.8189C0.820828 14.3815 0.541576 13.7832 0.504167 13.1467L0.5 13L0.5 3C0.499965 2.36232 0.743605 1.74874 1.18107 1.28478C1.61854 0.820828 2.21676 0.541576 2.85333 0.504167L3 0.5L13 0.5C13.6377 0.499965 14.2513 0.743605 14.7152 1.18107C15.1792 1.61854 15.4584 2.21676 15.4958 2.85333L15.5 3L15.5 13C15.5 13.6377 15.2564 14.2513 14.8189 14.7152C14.3815 15.1792 13.7832 15.4584 13.1467 15.4958L13 15.5L3 15.5ZM3 13.8333L10.5 13.8333L10.5 2.16667L3 2.16667C2.79589 2.16669 2.59889 2.24163 2.44636 2.37726C2.29383 2.5129 2.19638 2.69979 2.1725 2.9025L2.16667 3L2.16667 13C2.16669 13.2041 2.24163 13.4011 2.37726 13.5536C2.5129 13.7062 2.69979 13.8036 2.9025 13.8275L3 13.8333ZM6.65583 10.325L6.5775 10.2558L4.91083 8.58917C4.76735 8.44567 4.68116 8.25476 4.66843 8.05223C4.65569 7.84971 4.71729 7.6495 4.84167 7.48917L4.91083 7.41083L6.5775 5.74417C6.72747 5.59471 6.9287 5.50794 7.14032 5.50148C7.35194 5.49502 7.55809 5.56935 7.7169 5.70937C7.8757 5.8494 7.97525 6.04463 7.99533 6.25539C8.01541 6.46616 7.95451 6.67667 7.825 6.84417L7.75583 6.9225L6.67917 8L7.75583 9.0775C7.89931 9.22099 7.98551 9.41191 7.99824 9.61443C8.01097 9.81695 7.94938 10.0172 7.825 10.1775L7.75583 10.2558C7.61234 10.3993 7.42142 10.4855 7.2189 10.4982C7.01638 10.511 6.81617 10.4494 6.65583 10.325Z"/>
   </svg>
   <span class="pst-collapse-sidebar-label">Collapse Sidebar</span>
@@ -358,7 +377,7 @@
     
     <li class="breadcrumb-item breadcrumb-home">
       <a href="index.html" class="nav-link" aria-label="Home">
-        <i class="fa-solid fa-home"></i>
+        <i class="fa-solid fa-house"></i>
       </a>
     </li>
     <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">What’s new</span></li>
@@ -390,8 +409,53 @@
 <section id="enhancements">
 <h3>Enhancements<a class="headerlink" href="#enhancements" title="Link to this heading">#</a></h3>
 <ul class="simple">
-<li><p>Adds variance-transfer (VT) weight rescaling and (V,V)/(Z,-Z) neuron pairing to the growing-module extension workflow (<a class="reference external" href="https://github.com/growingnet/gromo/issues/237">#237</a> by <a class="reference external" href="https://github.com/TheoRudkiewicz">Théo Rudkiewicz</a>)</p></li>
-<li><p>Adds configurability to the ResNet container to allow using BatchNorm2d or disabling normalization entirely (<a class="reference external" href="https://github.com/growingnet/gromo/issues/228">#228</a> by <a class="reference external" href="https://github.com/TheoRudkiewicz">Théo Rudkiewicz</a>)</p></li>
+<li><p>Start a gradual adoption of the ty type checker on <code class="docutils literal notranslate"><span class="pre">src</span></code>: a <code class="docutils literal notranslate"><span class="pre">[tool.ty]</span></code> configuration, a pre-commit hook in the manual stage, and a non-blocking CI job reporting ty diagnostics on the lines changed by a pull request (<a class="reference external" href="https://github.com/growingnet/gromo/issues/289">#289</a> by <a class="reference external" href="https://github.com/sylvchev">Sylvain Chevallier</a>)</p></li>
+<li><p>Add contribution guidelines (<code class="docutils literal notranslate"><span class="pre">CONTRIBUTING.md</span></code>), a code of conduct (Contributor Covenant 3.0), a security policy, and issue and pull request templates (<a class="reference external" href="https://github.com/growingnet/gromo/issues/284">#284</a> by <a class="reference external" href="https://github.com/sylvchev">Sylvain Chevallier</a>)</p></li>
+<li><p>Add Dependabot to open monthly grouped updates of the pre-commit hooks and GitHub Actions versions (<a class="reference external" href="https://github.com/growingnet/gromo/issues/282">#282</a> by <a class="reference external" href="https://github.com/sylvchev">Sylvain Chevallier</a>)</p></li>
+<li><p>Add prune layer support to <code class="docutils literal notranslate"><span class="pre">GrowingModule</span></code>, <code class="docutils literal notranslate"><span class="pre">LinearGrowingModule</span></code>, <code class="docutils literal notranslate"><span class="pre">Conv2dGrowingModule</span></code>, and growing normalisation layers to shrink layers along features/channels (<a class="reference external" href="https://github.com/growingnet/gromo/issues/258">#258</a> by <a class="reference external" href="https://github.com/PineappleBlowsnow">Ying jin</a>).</p></li>
+<li><p>Add sequentially growable transformer backbones and classifier variants, including CCT, CVT, ViT-Lite, and text/image transformer support, with sequential block scheduling and tests (<a class="reference external" href="https://github.com/growingnet/gromo/issues/256">#256</a> by <a class="reference external" href="https://github.com/Santiago23florido">Santiago23florido</a>).</p></li>
+<li><p>Allow the statistics to be summed in a more precise dtype than their updates: <code class="docutils literal notranslate"><span class="pre">TensorStatistic.init</span></code> and <code class="docutils literal notranslate"><span class="pre">init_computation</span></code> (modules, blocks and containers) take <code class="docutils literal notranslate"><span class="pre">accumulation_dtype</span></code>, e.g. <code class="docutils literal notranslate"><span class="pre">torch.float64</span></code>, which removes the rounding of long accumulations. The average is still returned in the dtype of the updates, so downstream computations are unchanged; the default <code class="docutils literal notranslate"><span class="pre">None</span></code> keeps the current behaviour (<a class="reference external" href="https://github.com/growingnet/gromo/XXX">#XXX</a> by <a class="reference external" href="https://github.com/TheoRudkiewicz">Théo Rudkiewicz</a>).</p></li>
+<li><p>Add a numerical floor under every eigenvalue threshold of <code class="docutils literal notranslate"><span class="pre">S</span></code> and <code class="docutils literal notranslate"><span class="pre">E</span></code>: the maximum of the default tolerance of <code class="docutils literal notranslate"><span class="pre">torch.linalg.pinv</span></code> (<code class="docutils literal notranslate"><span class="pre">d</span> <span class="pre">*</span> <span class="pre">eps</span> <span class="pre">*</span> <span class="pre">lambda_1</span></code> in the dtype of the eigendecomposition), one ulp of <code class="docutils literal notranslate"><span class="pre">lambda_1</span></code> in the less precise of the accumulation and inversion dtypes, and twice the most negative eigenvalue, which measures the noise of low-precision (e.g. bfloat16) statistics. The first term can be switched off with <code class="docutils literal notranslate"><span class="pre">worst_case_numerical_floor=False</span></code>, forwarded by the growth APIs and the containers; it is off for the shrunk <code class="docutils literal notranslate"><span class="pre">E</span></code> of <code class="docutils literal notranslate"><span class="pre">fisher_shrinkage</span></code>. The floor replaces the absolute fallback of <a class="reference external" href="https://github.com/growingnet/gromo/issues/275">#275</a>, records its terms in the spectra (<code class="docutils literal notranslate"><span class="pre">&quot;numerical_floor&quot;</span></code>, <code class="docutils literal notranslate"><span class="pre">&quot;numerical_floor_terms&quot;</span></code>), and also applies to the pseudo-inverses of <code class="docutils literal notranslate"><span class="pre">optimal_delta</span></code> (<code class="docutils literal notranslate"><span class="pre">pseudo_inverse_matrix_semi_positive</span></code>). Add the threshold rule <code class="docutils literal notranslate"><span class="pre">&quot;operator_norm_noise_threshold&quot;</span></code> (a conservative estimate of the operator norm of the estimation error) and <code class="docutils literal notranslate"><span class="pre">TensorStatistic.dtype</span></code> (<a class="reference external" href="https://github.com/growingnet/gromo/XXX">#XXX</a> by <a class="reference external" href="https://github.com/TheoRudkiewicz">Théo Rudkiewicz</a>).</p></li>
+<li><p>Allow the eigenvalue thresholds of the growth APIs to be data-dependent: <code class="docutils literal notranslate"><span class="pre">numerical_threshold</span></code> and <code class="docutils literal notranslate"><span class="pre">statistical_threshold</span></code> now accept a threshold rule (or its name, e.g. <code class="docutils literal notranslate"><span class="pre">&quot;mean_over_sqrt_n&quot;</span></code>) mapping the <code class="docutils literal notranslate"><span class="pre">TensorStatistic</span></code> the thresholded matrix was estimated from and its spectrum to a threshold. The default of <code class="docutils literal notranslate"><span class="pre">numerical_threshold</span></code> changes in <a class="reference external" href="https://github.com/growingnet/gromo/XXX">#XXX</a> (see API changes) (<a class="reference external" href="https://github.com/growingnet/gromo/issues/275">#275</a> by <a class="reference external" href="https://github.com/TheoRudkiewicz">Théo Rudkiewicz</a>).</p></li>
+<li><p>Expose the spectra computed during growth: <code class="docutils literal notranslate"><span class="pre">GrowingModule.compute_optimal_updates</span></code> gains <code class="docutils literal notranslate"><span class="pre">collect_spectra</span></code> and <code class="docutils literal notranslate"><span class="pre">collect_delta_spectrum</span></code>, which record in <code class="docutils literal notranslate"><span class="pre">GrowingModule.growth_spectra</span></code> the whitening spectra of <code class="docutils literal notranslate"><span class="pre">S</span></code> and <code class="docutils literal notranslate"><span class="pre">E</span></code>, the singular values of the SVD target before selection and those of the optimal delta, together with the thresholds applied and the resulting counts. Add <code class="docutils literal notranslate"><span class="pre">spectrum_summary</span></code> to derive the usual scalars from a spectrum (<a class="reference external" href="https://github.com/growingnet/gromo/issues/275">#275</a> by <a class="reference external" href="https://github.com/TheoRudkiewicz">Théo Rudkiewicz</a>).</p></li>
+<li><p>Add the Zenodo DOI to <code class="docutils literal notranslate"><span class="pre">CITATION.cff</span></code> and the README, with PyPI, Python versions, documentation and DOI badges, and set the development status to beta (<a class="reference external" href="https://github.com/growingnet/gromo/issues/280">#280</a> by <a class="reference external" href="https://github.com/sylvchev">Sylvain Chevallier</a>)</p></li>
+</ul>
+</section>
+<section id="bugs">
+<h3>Bugs<a class="headerlink" href="#bugs" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>Fix the backend-dependent failures of <code class="docutils literal notranslate"><span class="pre">TestActivationVariance</span></code>: restore the global device after the <code class="docutils literal notranslate"><span class="pre">TestUtils</span></code> tests, and average the activation variance over 10 seeds, as the random generators of the CPU, CUDA and MPS backends differ for a same seed (<a class="reference external" href="https://github.com/growingnet/gromo/issues/293">#293</a> by <a class="reference external" href="https://github.com/sylvchev">Sylvain Chevallier</a>)</p></li>
+<li><p>Run pydoclint in CI through its pre-commit hook, so that CI and pre-commit use the same pinned version, and remove the debug step printing secrets in the documentation workflow (<a class="reference external" href="https://github.com/growingnet/gromo/issues/281">#281</a> by <a class="reference external" href="https://github.com/sylvchev">Sylvain Chevallier</a>)</p></li>
+<li><p>Fix the pseudo-inverses of <code class="docutils literal notranslate"><span class="pre">optimal_delta</span></code>: after a cast to a more precise dtype, including in its float64 retry, they kept the rounding noise of the statistics, and <code class="docutils literal notranslate"><span class="pre">torch.linalg.pinv</span></code> inverted negative noise eigenvalues with their wrong sign; both are now dropped by the numerical floor. The retry now returns tensors in the dtype of the statistics. <code class="docutils literal notranslate"><span class="pre">sqrt_inverse_matrix_semi_positive</span></code> no longer modifies its input matrix when <code class="docutils literal notranslate"><span class="pre">eigh</span></code> fails (<a class="reference external" href="https://github.com/growingnet/gromo/XXX">#XXX</a> by <a class="reference external" href="https://github.com/TheoRudkiewicz">Théo Rudkiewicz</a>)</p></li>
+</ul>
+</section>
+<section id="api-changes">
+<h3>API changes<a class="headerlink" href="#api-changes" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">numerical_threshold</span></code> defaults to <code class="docutils literal notranslate"><span class="pre">None</span></code>, the numerical floor, instead of <code class="docutils literal notranslate"><span class="pre">1e-6</span></code>, and explicit values are floored like rules: a threshold can only raise the floor, and falls back to it when it would drop the whole spectrum of a non-zero matrix. <code class="docutils literal notranslate"><span class="pre">0</span></code> (and <code class="docutils literal notranslate"><span class="pre">e_numerical_threshold=0.0</span></code>) now means the floor, not “keep everything”. Results change in both directions: the floor is relative, so a matrix of small scale (<code class="docutils literal notranslate"><span class="pre">lambda_1</span> <span class="pre">&lt;</span> <span class="pre">8.4</span> <span class="pre">/</span> <span class="pre">d</span></code> in float32, typical of the gradient covariance <code class="docutils literal notranslate"><span class="pre">E</span></code>) keeps more directions than with the absolute <code class="docutils literal notranslate"><span class="pre">1e-6</span></code>; for larger scales, directions below <code class="docutils literal notranslate"><span class="pre">d</span> <span class="pre">*</span> <span class="pre">eps</span> <span class="pre">*</span> <span class="pre">lambda_1</span></code> are dropped (<code class="docutils literal notranslate"><span class="pre">worst_case_numerical_floor=False</span></code> keeps them); with bfloat16 statistics, rounding-noise directions are dropped. (<a class="reference external" href="https://github.com/growingnet/gromo/XXX">#XXX</a> by <a class="reference external" href="https://github.com/TheoRudkiewicz">Théo Rudkiewicz</a>).</p></li>
+</ul>
+</section>
+</section>
+<section id="version-0-1-0-2026-10-16">
+<span id="changes-0-1-0"></span><h2>Version 0.1.0 (2026-10-16)<a class="headerlink" href="#version-0-1-0-2026-10-16" title="Link to this heading">#</a></h2>
+<section id="id1">
+<h3>Enhancements<a class="headerlink" href="#id1" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>Add a GitHub Actions workflow publishing the package to PyPI with trusted publishing when a GitHub release is published, and to TestPyPI on manual runs (<a class="reference external" href="https://github.com/growingnet/gromo/issues/277">#277</a> by <a class="reference external" href="https://github.com/sylvchev">Sylvain Chevallier</a>)</p></li>
+<li><p>Prepare the packaging for PyPI: single-sourced version in <code class="docutils literal notranslate"><span class="pre">gromo/__init__.py</span></code>, BSD-3-Clause licence metadata, project URLs and classifiers, lighter runtime dependencies and source distribution, and a <code class="docutils literal notranslate"><span class="pre">CITATION.cff</span></code> file (<a class="reference external" href="https://github.com/growingnet/gromo/issues/276">#276</a> by <a class="reference external" href="https://github.com/sylvchev">Sylvain Chevallier</a>)</p></li>
+<li><p>Add <code class="docutils literal notranslate"><span class="pre">fisher_shrinkage</span></code> to ridge-shrink the empirical-Fisher gradient-covariance matrix <code class="docutils literal notranslate"><span class="pre">E</span></code> toward a scaled identity, avoiding rank collapse under whitening, and add exact (“true”) Fisher accumulation for classification (<code class="docutils literal notranslate"><span class="pre">GrowingContainer.accumulate_true_fisher_covariance</span></code>) as a lower-variance alternative to the empirical Fisher (<a class="reference external" href="https://github.com/growingnet/gromo/issues/267">#267</a> by <a class="reference external" href="https://github.com/hmousset">Hugo Mousset</a>).</p></li>
+<li><p>Split <code class="docutils literal notranslate"><span class="pre">create_layer_extensions</span></code> into <code class="docutils literal notranslate"><span class="pre">allocate_layer_extensions</span></code> (create the extension layers) and <code class="docutils literal notranslate"><span class="pre">initialize_extensions</span></code> (set their values), so that already created extensions can be re-initialized, and promote the extension initializations to the <code class="docutils literal notranslate"><span class="pre">GrowingModule.KNOWN_EXTENSION_INITS</span></code> registry, that also accepts custom callables. <code class="docutils literal notranslate"><span class="pre">copy_initialization_variance</span></code>, <code class="docutils literal notranslate"><span class="pre">kaiming_initialization</span></code> and the new <code class="docutils literal notranslate"><span class="pre">zeros_initialization</span></code> are now static methods, of signature <code class="docutils literal notranslate"><span class="pre">(tensor,</span> <span class="pre">reference_tensor,</span> <span class="pre">fan_in)</span></code> (<a class="reference external" href="https://github.com/growingnet/gromo/issues/272">#272</a> by <a class="reference external" href="https://github.com/TheoRudkiewicz">Théo Rudkiewicz</a>).</p></li>
+<li><p>Add Kaiming-normal and copy-normal initializations for layer extensions: <code class="docutils literal notranslate"><span class="pre">kaiming_initialization</span></code> and <code class="docutils literal notranslate"><span class="pre">copy_initialization_variance</span></code> (renamed from <code class="docutils literal notranslate"><span class="pre">copy_uniform_initialization</span></code>) gain a <code class="docutils literal notranslate"><span class="pre">distribution</span></code> argument, exposed through the new <code class="docutils literal notranslate"><span class="pre">&quot;kaiming_normal&quot;</span></code> and <code class="docutils literal notranslate"><span class="pre">&quot;copy_normal&quot;</span></code> keys of <code class="docutils literal notranslate"><span class="pre">create_layer_extensions</span></code> (<a class="reference external" href="https://github.com/growingnet/gromo/issues/259">#259</a> by <a class="reference external" href="https://github.com/TheoRudkiewicz">Théo Rudkiewicz</a>).</p></li>
+<li><p>Refactored growing MLP containers to use <cite>SequentialGrowingContainer</cite> for a more unified model manipulation interface (<a class="reference external" href="https://github.com/growingnet/gromo/issues/253">#253</a> by <a class="reference external" href="https://github.com/maxencelebaron">Pako Maxence TEKOU</a>)</p></li>
+<li><p>Example for <cite>GrowingGraphNetwork</cite> and <cite>GrowingDAG</cite> usage (<a class="reference external" href="https://github.com/growingnet/gromo/issues/252">#252</a> by <a class="reference external" href="https://github.com/stelladk">Stella Douka</a>)</p></li>
+<li><p>Add an empirical Fisher (loss-gradient covariance) as an optional preconditioner for both optimal-delta weight updates and rank-k neuron extension computations (<a class="reference external" href="https://github.com/growingnet/gromo/issues/250">#250</a> by <a class="reference external" href="https://github.com/TheoRudkiewicz">Théo Rudkiewicz</a>).</p></li>
+<li><p>Add GradMax normalization details and associated tests for update scaling behavior (<a class="reference external" href="https://github.com/growingnet/gromo/issues/242">#242</a> by <a class="reference external" href="https://github.com/maxencelebaron">Pako Maxence TEKOU</a>)</p></li>
+<li><p>Introduce an empirical Fisher / loss-gradient covariance statistic to GrowingModule-based layers (<a class="reference external" href="https://github.com/growingnet/gromo/issues/249">#249</a> by <a class="reference external" href="https://github.com/TheoRudkiewicz">Théo Rudkiewicz</a>).</p></li>
+<li><p>Introduce decoupled scaling factors for GrowingModule behavior, separating scaling for the optimal-delta update, the input extension, and the output extension (<a class="reference external" href="https://github.com/growingnet/gromo/issues/245">#245</a> by <a class="reference external" href="https://github.com/TheoRudkiewicz">Théo Rudkiewicz</a>).</p></li>
+<li><p>Introduce VGG-like growing architecture support with the <cite>VGG</cite> class (<a class="reference external" href="https://github.com/growingnet/gromo/issues/236">#236</a> by <a class="reference external" href="https://github.com/hmousset">Hugo Mousset</a>)</p></li>
+<li><p>Add support for selecting GroupNorm as the normalization layer in the ResNet container, alongside the existing BatchNorm option (<a class="reference external" href="https://github.com/growingnet/gromo/issues/233">#233</a> by <a class="reference external" href="https://github.com/TheoRudkiewicz">Théo Rudkiewicz</a>).</p></li>
+<li><p>Add configurability to the ResNet container to allow using BatchNorm2d or disabling normalization entirely (<a class="reference external" href="https://github.com/growingnet/gromo/issues/228">#228</a> by <a class="reference external" href="https://github.com/TheoRudkiewicz">Théo Rudkiewicz</a>)</p></li>
+<li><p>Add variance-transfer (VT) weight rescaling and (V,V)/(Z,-Z) neuron pairing to the growing-module extension workflow (<a class="reference external" href="https://github.com/growingnet/gromo/issues/237">#237</a> by <a class="reference external" href="https://github.com/TheoRudkiewicz">Théo Rudkiewicz</a>)</p></li>
 <li><p>Add <code class="docutils literal notranslate"><span class="pre">uv</span></code> files, use <code class="docutils literal notranslate"><span class="pre">uv</span> <span class="pre">sync</span> <span class="pre">--extra</span> <span class="pre">dev</span> <span class="pre">--extra</span> <span class="pre">test</span> <span class="pre">--extra</span> <span class="pre">doc</span></code> to install the package with all dependencies (<a class="reference external" href="https://github.com/growingnet/gromo/issues/226">#226</a> by <a class="reference external" href="https://github.com/TheoRudkiewicz">Théo Rudkiewicz</a>)</p></li>
 <li><p>Use <code class="docutils literal notranslate"><span class="pre">ruff</span></code> for formatting (<a class="reference external" href="https://github.com/growingnet/gromo/issues/227">#227</a> by <a class="reference external" href="https://github.com/TheoRudkiewicz">Théo Rudkiewicz</a>)</p></li>
 <li><p>Change how size-dependent post_layer_function modules handle extended activities in the growing module framework (<a class="reference external" href="https://github.com/growingnet/gromo/issues/224">#224</a> by <a class="reference external" href="https://github.com/TheoRudkiewicz">Théo Rudkiewicz</a>)</p></li>
@@ -461,11 +525,16 @@
 <li><p>Option to disable logging (<a class="reference external" href="https://github.com/growingnet/gromo/issues/14">#14</a> by <a class="reference external" href="https://github.com/stelladk">Stella Douka</a>)</p></li>
 <li><p>Add CI (<a class="reference external" href="https://github.com/growingnet/gromo/issues/2">#2</a> by <a class="reference external" href="https://github.com/sylvchev">Sylvain Chevallier</a>)</p></li>
 <li><p>Modify LinearGrowingModule to operate on the last dimension of an input tensor with arbitrary shape (<a class="reference external" href="https://github.com/growingnet/gromo/issues/54">#54</a> by <a class="reference external" href="https://github.com/streethagore">Stéphane Rivaud</a>)</p></li>
+<li><p>Add WideResNet-style dropout support to ResNet with <cite>GrowingDropout2d</cite> modules that preserve network growth (<a class="reference external" href="https://github.com/growingnet/gromo/issues/243">#243</a> by <a class="reference external" href="https://github.com/ferdinandlouapre">ferdinandlouapre</a>)</p></li>
 </ul>
 </section>
-<section id="bugs">
-<h3>Bugs<a class="headerlink" href="#bugs" title="Link to this heading">#</a></h3>
+<section id="id2">
+<h3>Bugs<a class="headerlink" href="#id2" title="Link to this heading">#</a></h3>
 <ul class="simple">
+<li><p>Fix the author credits on the PyPI page, which linked the authors without email to the email of the first author: list the authors by name only and add a maintainer contact (<a class="reference external" href="https://github.com/growingnet/gromo/issues/278">#278</a> by <a class="reference external" href="https://github.com/sylvchev">Sylvain Chevallier</a>)</p></li>
+<li><p>Rename the unused <code class="docutils literal notranslate"><span class="pre">**_</span></code> argument of <code class="docutils literal notranslate"><span class="pre">GrowingContainer.dummy_select_update</span></code> to <code class="docutils literal notranslate"><span class="pre">**kwargs</span></code>, as pydoclint &gt;= 0.10 ignores <code class="docutils literal notranslate"><span class="pre">_</span></code> and rejected its docstring (<a class="reference external" href="https://github.com/growingnet/gromo/issues/276">#276</a> by <a class="reference external" href="https://github.com/sylvchev">Sylvain Chevallier</a>)</p></li>
+<li><p>Fix <code class="docutils literal notranslate"><span class="pre">first_order_improvement</span></code> when <code class="docutils literal notranslate"><span class="pre">ignore_singular_values=True</span></code>: the new-neuron term now sums the singular values instead of squaring them, consistent with the unit-scaled extension weights, and <code class="docutils literal notranslate"><span class="pre">scale_layer_extension</span></code> is adjusted accordingly (<a class="reference external" href="https://github.com/growingnet/gromo/issues/261">#261</a> by <a class="reference external" href="https://github.com/TheoRudkiewicz">Théo Rudkiewicz</a>)</p></li>
+<li><p>Fix orientation of non-square images in <cite>__make_safe_forward</cite> (<a class="reference external" href="https://github.com/growingnet/gromo/issues/230">#230</a> by <a class="reference external" href="https://github.com/stelladk">Stella Douka</a>)</p></li>
 <li><p>Address training instability in <cite>GrowingDAG</cite> (<a class="reference external" href="https://github.com/growingnet/gromo/issues/210">#210</a> by <a class="reference external" href="https://github.com/stelladk">Stella Douka</a>)</p></li>
 <li><p>Fix lingering modules that were not properly deleted (<a class="reference external" href="https://github.com/growingnet/gromo/issues/210">#210</a> by <a class="reference external" href="https://github.com/stelladk">Stella Douka</a>)</p></li>
 <li><p>Fix sub-modules that are not registered in pytorch (<a class="reference external" href="https://github.com/growingnet/gromo/issues/179">#179</a> by <a class="reference external" href="https://github.com/stelladk">Stella Douka</a>)</p></li>
@@ -487,9 +556,10 @@
 <li><p>Fix memory leak from issue <a class="reference external" href="https://github.com/growingnet/gromo/issues/96">#96</a> (<a class="reference external" href="https://github.com/growingnet/gromo/issues/97">#97</a> by <a class="reference external" href="https://github.com/TheoRudkiewicz">Théo Rudkiewicz</a>)</p></li>
 </ul>
 </section>
-<section id="api-changes">
-<h3>API changes<a class="headerlink" href="#api-changes" title="Link to this heading">#</a></h3>
+<section id="id3">
+<h3>API changes<a class="headerlink" href="#id3" title="Link to this heading">#</a></h3>
 <ul class="simple">
+<li><p>Drop support for Python 3.10, which reached its end of life, and test on Python 3.11 to 3.14 (<a class="reference external" href="https://github.com/growingnet/gromo/issues/276">#276</a> by <a class="reference external" href="https://github.com/sylvchev">Sylvain Chevallier</a>)</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">compute_optimal_updates()</span></code> now exposes primitive boolean controls (<code class="docutils literal notranslate"><span class="pre">compute_delta</span></code>, <code class="docutils literal notranslate"><span class="pre">use_covariance</span></code>, <code class="docutils literal notranslate"><span class="pre">alpha_zero</span></code>, <code class="docutils literal notranslate"><span class="pre">use_projection</span></code>) and growth-related defaults are intentionally unified to <code class="docutils literal notranslate"><span class="pre">numerical_threshold=1e-6</span></code> and <code class="docutils literal notranslate"><span class="pre">statistical_threshold=1e-3</span></code> for consistency across modules. Migration for direct internal calls: <code class="docutils literal notranslate"><span class="pre">compute_optimal_added_parameters()</span></code> is now <code class="docutils literal notranslate"><span class="pre">_compute_optimal_added_parameters()</span></code>; external users should prefer <code class="docutils literal notranslate"><span class="pre">compute_optimal_updates()</span></code> (<a class="reference external" href="https://github.com/growingnet/gromo/issues/193">#193</a> by <a class="reference external" href="https://github.com/streethagore">Stéphane Rivaud</a>)</p></li>
 <li><p>Allow growth between two <cite>GrowingDAG</cite> modules (<a class="reference external" href="https://github.com/growingnet/gromo/issues/148">#148</a> &amp; <a class="reference external" href="https://github.com/growingnet/gromo/issues/179">#179</a> by <a class="reference external" href="https://github.com/stelladk">Stella Douka</a>)</p></li>
 <li><p>Apply all candidate expansions on the same <cite>GrowingDAG</cite> without deepcopy (<a class="reference external" href="https://github.com/growingnet/gromo/issues/148">#148</a> by <a class="reference external" href="https://github.com/stelladk">Stella Douka</a>)</p></li>
@@ -512,12 +582,12 @@
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="generated/gromo.utils.tools.compute_mask_tensor_t.html"
+       href="generated/gromo.utils.tools.resolve_threshold_rule.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">gromo.utils.tools.compute_mask_tensor_t</p>
+        <p class="prev-next-title">gromo.utils.tools.resolve_threshold_rule</p>
       </div>
     </a>
     <a class="right-next"
@@ -536,7 +606,7 @@
             
             
               
-                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <dialog id="pst-secondary-sidebar-modal" tabindex="-1"></dialog>
                 <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
 
 
@@ -552,6 +622,12 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#enhancements">Enhancements</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#bugs">Bugs</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#api-changes">API changes</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#version-0-1-0-2026-10-16">Version 0.1.0 (2026-10-16)</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id1">Enhancements</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id2">Bugs</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id3">API changes</a></li>
 </ul>
 </li>
 </ul>
@@ -570,8 +646,8 @@
   </div>
   
   <!-- Scripts loaded after <body> so the DOM is not blocked -->
-  <script defer src="_static/scripts/bootstrap.js?digest=55c26ed414f5f8a31ebb"></script>
-<script defer src="_static/scripts/pydata-sphinx-theme.js?digest=55c26ed414f5f8a31ebb"></script>
+  <script defer src="_static/scripts/bootstrap.js?digest=75c7c72ae941e8b558d8"></script>
+<script defer src="_static/scripts/pydata-sphinx-theme.js?digest=75c7c72ae941e8b558d8"></script>
 
   <footer class="bd-footer">
 <div class="bd-footer__inner bd-page-width">
@@ -597,7 +673,7 @@
         <div class="footer-item">
 <p class="theme-version">
   <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
-  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.17.1.
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.24.0.
 </p></div>
       
     </div>
